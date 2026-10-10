@@ -1,0 +1,44 @@
+server:
+  port: 8081
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: ticket_back
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 4 个参数都不是可有可无的：
+    #   characterEncoding=utf8      防中文乱码
+    #   allowPublicKeyRetrieval     MySQL 8 用 caching_sha2_password 且不开 SSL 时的必需项，缺了连不上
+    #   serverTimezone=Asia/Shanghai 让 DATETIME 的时区确定，否则和 JVM 时区不一致会差 8 小时
+    #   useSSL=false                本地连接关掉 SSL 握手
+    url: jdbc:mysql://127.0.0.1:3306/db_ticket?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+
+  # Spring Boot 3 是 spring.data.redis.*，不再是 spring.redis.*
+  data:
+    redis:
+      host: localhost
+      port: 6300
+      password: 123456
+      # 连接池。commons-pool2 已在 pom 里，不引的话下面这些参数会被静默忽略
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 10
+          min-idle: 1
+          time-between-eviction-runs: 10s
+
+  jackson:
+    default-property-inclusion: non_null # JSON 处理时忽略 null 字段
+
+mybatis-plus:
+  type-aliases-package: com.liule.ticket.entity # 别名扫描包
+  configuration:
+    map-underscore-to-camel-case: true # create_time → createTime
+
+logging:
+  level:
+    com.liule.ticket: debug

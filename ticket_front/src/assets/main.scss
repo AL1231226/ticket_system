@@ -1,0 +1,65 @@
+// 全局主题。色板取自设计文档 8.3「视觉规范」。
+// 定调深色系：演出天然是夜间的、有灯光感的。
+
+:root {
+  /* ---- 自有色板 ---- */
+  --bg-base: #0f0f14; // 页面底
+  --bg-card: #1a1a22; // 卡片
+  --bg-elevated: #24242e; // 悬浮层
+
+  --brand: #ff3d71; // 主色：荧光粉红（开票 / 抢票）
+  --brand-alt: #7b61ff; // 辅助色：电光紫（候补 / 会员）
+  --accent: #ffcb47; // 强调：金色（VIP / 热门）
+
+  --text-1: #ffffff; // 主文字
+  --text-2: #a0a0b0; // 次要文字
+  --text-3: #5a5a6e; // 禁用 / 占位
+
+  --success: #2ed573;
+  --danger: #ff4757;
+
+  /* ---- Vant 换肤：只覆盖 CSS 变量，不改组件源码 ---- */
+  --van-primary-color: #ff3d71;
+  --van-background: #0f0f14;
+  --van-background-2: #1a1a22;
+  --van-text-color: #ffffff;
+  --van-text-color-2: #a0a0b0;
+  --van-text-color-3: #5a5a6e;
+  --van-border-color: #2a2a36;
+  --van-nav-bar-background: #0f0f14;
+  --van-tabbar-background: #1a1a22;
+  --van-danger-color: #ff4757;
+  --van-success-color: #2ed573;
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Helvetica Neue', Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-1);
+  // 移动端 H5：禁掉横向滚动和长按选中带来的"网页感"
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+button {
+  font-family: inherit;
+}

@@ -1,0 +1,11 @@
+{
+  // 只给编辑器看的配置，不参与打包。
+  // 作用：让 VS Code 认识 "@/" 这个路径别名，写 import 时能自动补全、能按住 Ctrl 点进去。
+  // 真正让 "@/xxx" 在运行时也能解析的是 vite.config.js 里的 resolve.alias，两处要一致。
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
