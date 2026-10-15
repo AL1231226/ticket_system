@@ -33,6 +33,7 @@ public class RedisClient {
     public <R,ID> R queryById_chuntou(String keyPrefix, ID id, Class<R> type, Long time, TimeUnit unit, Function<ID,R> function) {
         //缓存中查询商户
         String key = keyPrefix + id;
+        //key不存在返回null,key存在，可能为空字符
         String Json= stringRedisTemplate.opsForValue().get(key);
         //缓存中存在,返回商户
         if(StrUtil.isNotBlank(Json)){
@@ -72,7 +73,7 @@ public class RedisClient {
             return r;
         }
         //缓存已过期
-        if (huoqu_lock(LOCK_SHOP_KEY + id)) {
+        if (huoqu_lock(LOCK_SHOW_KEY + id)) {
             RedisData redisData_q = JSONUtil.toBean(stringRedisTemplate.opsForValue().get(key), RedisData.class);
             if (redisData_q.getExpireTime().isAfter(LocalDateTime.now())) {
                 return JSONUtil.toBean((JSONObject) redisData_q.getData(), type);
@@ -85,7 +86,7 @@ public class RedisClient {
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 } finally {
-                    shanchu_lock(LOCK_SHOP_KEY + id);
+                    shanchu_lock(LOCK_SHOW_KEY + id);
                 }
             });
 
@@ -97,7 +98,7 @@ public class RedisClient {
     }
     public boolean huoqu_lock(String key) {
 
-        boolean flag =stringRedisTemplate.opsForValue().setIfAbsent(key, "1", LOCK_SHOP_TTL, TimeUnit.SECONDS);
+        boolean flag =stringRedisTemplate.opsForValue().setIfAbsent(key, "1", LOCK_SHOW_TTL, TimeUnit.SECONDS);
         return BooleanUtil.isTrue( flag);
 
     }

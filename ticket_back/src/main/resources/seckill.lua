@@ -1,26 +1,22 @@
---优惠劵id
-local id=ARGV[1]
---用户id
-local userid=ARGV[2]
---订单id
-local orderid=ARGV[3]
---库存key
-local stockey="seckill:stock:"..id
---订单key
-local orderkey="seckill:order:"..id
---判断库存
-if tonumber(redis.call("get",stockey))<=0 then
+local stock = redis.call('GET', KEYS[1])
+if (not stock) or (tonumber(stock) < tonumber(ARGV[3])) then
     return 1
 end
---判断用户是否已经下单
-if redis.call("sismember",orderkey,userid)==1 then
+
+local bought = tonumber(redis.call('HGET', KEYS[2], ARGV[1]) or '0')
+if bought + tonumber(ARGV[3]) > tonumber(ARGV[4]) then
     return 2
 end
---减库存
-redis.call("incrby",stockey,-1)
---记录订单
-redis.call("sadd",orderkey,userid)
-redis.call("xadd","stream.orders","*","voucherId",id,"userId",userid,"id",orderid)
+
+redis.call('DECRBY', KEYS[1], ARGV[3])
+redis.call('HINCRBY', KEYS[2], ARGV[1], ARGV[3])
+redis.call('XADD', KEYS[3], '*',
+    'orderId',   ARGV[2],
+    'userId',    ARGV[1],
+    'tierId',    ARGV[5],
+    'sessionId', ARGV[6],
+    'quantity',  ARGV[3])
+
 return 0
 
 
