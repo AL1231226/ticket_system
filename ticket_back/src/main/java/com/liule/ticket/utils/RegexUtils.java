@@ -29,6 +29,15 @@ public class RegexUtils {
         return mismatch(code, RegexPatterns.VERIFY_CODE_REGEX);
     }
 
+    /**
+     * 是否是无效的 18 位身份证号
+     * @param idCard 要校验的证件号
+     * @return true:不符合，false：符合
+     */
+    public static boolean isIdCardInvalid(String idCard){
+        return mismatch(idCard, RegexPatterns.ID_CARD_REGEX);
+    }
+
     // 校验是否不符合正则格式
     private static boolean mismatch(String str, String regex){
         if (StrUtil.isBlank(str)) {

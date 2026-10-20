@@ -18,4 +18,14 @@ public abstract class RegexPatterns {
      */
     public static final String VERIFY_CODE_REGEX = "^[a-zA-Z\\d]{6}$";
 
+    /**
+     * 身份证号正则（18 位）。
+     * <p>
+     * 做了结构校验：6 位地区码 + 合法的出生年份/月/日 + 3 位顺序码 + 1 位校验位。
+     * 校验位只校验"是数字或 X"的字符形态，不校验加权和算法 ——
+     * 要更严格可以再加一步 mod 11-2 校验。
+     */
+    public static final String ID_CARD_REGEX =
+            "^[1-9]\\d{5}(18|19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]$";
+
 }

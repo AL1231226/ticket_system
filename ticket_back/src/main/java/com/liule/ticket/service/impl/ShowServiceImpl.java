@@ -8,6 +8,7 @@ import com.liule.ticket.dto.Result;
 import com.liule.ticket.dto.ShowDetailVO;
 import com.liule.ticket.entity.Show;
 import com.liule.ticket.entity.ShowSession;
+import com.liule.ticket.entity.TicketTier;
 import com.liule.ticket.mapper.ShowMapper;
 import com.liule.ticket.service.IShowService;
 import com.liule.ticket.service.IShowSessionService;
@@ -19,8 +20,11 @@ import jakarta.annotation.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static com.liule.ticket.utils.RedisConstants.CACHE_SHOW_KEY;
@@ -122,7 +126,30 @@ public class ShowServiceImpl extends ServiceImpl<ShowMapper, Show> implements IS
     private Result pageQuery(LambdaQueryWrapper<Show> wrapper, Integer page) {
         long current = (page == null || page < 1) ? 1 : page;
         Page<Show> p = page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE), wrapper);
+        fillMinPrice(p.getRecords());
         return Result.ok(p.getRecords(), p.getTotal());
+    }
+
+    /**
+     * 列表页批量补最低票价。
+     * <p>
+     * 列表接口只返回 Show，不返回票档；首页要显示「¥xx 起」，
+     * 这里按本页的演出 id 一次查回所有上架票档，取最低价，避免前端逐条查详情。
+     */
+    private void fillMinPrice(List<Show> shows) {
+        if (shows == null || shows.isEmpty()) {
+            return;
+        }
+        List<Long> showIds = shows.stream().map(Show::getId).toList();
+        Map<Long, BigDecimal> minPrices = new HashMap<>();
+        for (TicketTier tier : ticketTierService.list(
+                new LambdaQueryWrapper<TicketTier>()
+                        .select(TicketTier::getShowId, TicketTier::getPrice)
+                        .in(TicketTier::getShowId, showIds)
+                        .eq(TicketTier::getStatus, 1))) {
+            minPrices.merge(tier.getShowId(), tier.getPrice(), BigDecimal::min);
+        }
+        shows.forEach(s -> s.setMinPrice(minPrices.get(s.getId())));
     }
 
 }

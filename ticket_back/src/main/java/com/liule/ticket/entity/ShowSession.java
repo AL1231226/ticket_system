@@ -47,6 +47,15 @@ public class ShowSession implements Serializable {
     private LocalDateTime onSaleTime;
 
     /**
+     * 每账号在本场次的【累计】限购上限 —— 总共能买几张。
+     * <p>
+     * 和票档表的 maxPerOrder 是两层互相独立的约束，别混：
+     * 这里由秒杀 Lua 按「账号 + 场次」累计判定（计数在 seckill:ordered:{sessionId}），
+     * 那里只管一笔订单最多几张，在 Java 侧的前置校验里判。
+     */
+    private Integer purchaseLimit;
+
+    /**
      * 0未开票 1预售中 2已开票 3已售罄 4已结束 5已取消
      */
     private Integer status;

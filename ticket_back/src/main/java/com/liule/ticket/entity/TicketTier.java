@@ -77,9 +77,13 @@ public class TicketTier implements Serializable {
     private Integer lockStock;
 
     /**
-     * 每账号限购数量
+     * 单笔订单上限：一笔订单最多买几张。
+     * <p>
+     * <b>不是累计限购</b>。每账号在本场次总共能买几张看 ShowSession#purchaseLimit，
+     * 由秒杀 Lua 按「账号 + 场次」累计判定。两者是独立的旋钮：
+     * 这里可以按票档差异化（内场 VIP 收紧到 2 张防单笔扫位置，看台放宽到 4 张）。
      */
-    private Integer purchaseLimit;
+    private Integer maxPerOrder;
 
     /**
      * 0下架 1上架

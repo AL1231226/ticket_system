@@ -32,7 +32,6 @@ public class flashInterceptor implements HandlerInterceptor {
        Map<Object, Object> usermap = stringRedisTemplate.opsForHash().entries(LOGIN_USER_KEY + token);
 
         if (usermap.isEmpty()) {
-            response.setStatus(401);
             return true;
         }
         // 保存用户
@@ -40,7 +39,7 @@ public class flashInterceptor implements HandlerInterceptor {
 
         UserHolder.saveUser((UserDTO) user);
         // 刷新有效期
-        stringRedisTemplate.expire(LOGIN_USER_KEY + token,LOGIN_USER_TTL, TimeUnit.SECONDS);
+        stringRedisTemplate.expire(LOGIN_USER_KEY + token,LOGIN_USER_TTL, TimeUnit.MINUTES);
         // 放行
         return true;
 

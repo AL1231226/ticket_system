@@ -312,6 +312,11 @@ async function handleLogin() {
 }
 
 .login__submit {
+  // Vant 的默认主色是蓝色；这里把按钮级变量覆盖成品牌粉，登录页才不会跳色
+  --van-button-primary-background: linear-gradient(96deg, #ff3d71, #ff6b35);
+  --van-button-primary-border-color: transparent;
+  --van-button-primary-color: #fff;
+
   margin-top: 20px;
   height: 46px;
   font-size: 16px;

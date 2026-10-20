@@ -2,9 +2,9 @@
 -- 演出票务平台 · 建库建表 + 种子数据
 -- 库名 db_ticket ｜ 字符集 utf8mb4 ｜ 引擎 InnoDB
 --
--- 范围：目前 11 张表
+-- 范围：目前 13 张表
 --       Plan 1：用户 / 用户详情 / 场馆 / 分类 / 演出 / 想看 / 场次 / 票档
---       Plan 2：订单 / 票 / 限购兜底
+--       Plan 2：订单 / 票 / 限购兜底 / 观演人库 / 订单观演人
 --       候补、社区、站内信的表留到对应 Plan 再建
 --
 -- ⚠ 这个脚本是【可重复执行】的，每张表都先 DROP。开发环境随便跑，
@@ -142,13 +142,15 @@ CREATE TABLE tb_show_want (
 -- ------------------------------------------------------------
 DROP TABLE IF EXISTS tb_show_session;
 CREATE TABLE tb_show_session (
-  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  show_id      BIGINT UNSIGNED NOT NULL COMMENT '演出ID',
-  session_name VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '场次名，如"周六 19:30"',
-  session_time DATETIME     NOT NULL COMMENT '开演时间',
-  on_sale_time DATETIME     NOT NULL COMMENT '本场开票时间',
-  status       TINYINT UNSIGNED NOT NULL DEFAULT 0
-               COMMENT '0未开票 1预售中 2已开票 3已售罄 4已结束 5已取消',
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  show_id        BIGINT UNSIGNED NOT NULL COMMENT '演出ID',
+  session_name   VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '场次名，如"周六 19:30"',
+  session_time   DATETIME     NOT NULL COMMENT '开演时间',
+  on_sale_time   DATETIME     NOT NULL COMMENT '本场开票时间',
+  purchase_limit TINYINT UNSIGNED NOT NULL DEFAULT 6
+                 COMMENT '每账号在本场次的【累计】限购上限。票档表的 max_per_order 是单笔上限，两层独立',
+  status         TINYINT UNSIGNED NOT NULL DEFAULT 0
+                 COMMENT '0未开票 1预售中 2已开票 3已售罄 4已结束 5已取消',
   create_time  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -168,7 +170,7 @@ CREATE TABLE tb_ticket_tier (
   total_stock    INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '总库存',
   stock          INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '可售库存（Redis 秒杀扣的就是这一列）',
   lock_stock     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '被待支付订单占用；取消/超时归还 stock，支付成功则不再归还',
-  purchase_limit TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '每账号限购数量',
+  max_per_order  TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '单笔订单上限（每单最多买几张）；累计限购在场次表',
   status         TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0下架 1上架',
   create_time    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -197,8 +199,6 @@ CREATE TABLE tb_ticket_order (
   amount      DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '订单金额',
   status      TINYINT UNSIGNED NOT NULL DEFAULT 0
               COMMENT '0待支付 1已支付 2已取消 3已退款 4已失效(超时)',
-  real_name   VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '实名信息',
-  id_card     VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '证件号',
   phone       VARCHAR(11)  NOT NULL DEFAULT '' COMMENT '联系电话',
   source      TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0正常抢票 1候补补位',
   create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -252,6 +252,58 @@ CREATE TABLE tb_user_purchase (
   PRIMARY KEY (id),
   UNIQUE KEY uk_user_session (user_id, session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户场次购买汇总（限购兜底）';
+
+-- ------------------------------------------------------------
+-- 12. 用户常用观演人（账号级实名信息库）
+--     抢票前用户就在这里把观演人录好并完成实名认证；下单时是从这里
+--     "勾选"，不是在抢票请求里现填 —— 实名信息不该出现在秒杀热路径上。
+--
+--     ⚠ 若执行"一个证件只能绑一个账号"的平台策略，把 idx_idcard
+--       升级成 UNIQUE KEY 即可（代价是解绑必须走客服）。
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS tb_user_attendee;
+CREATE TABLE tb_user_attendee (
+  id            BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id       BIGINT UNSIGNED  NOT NULL COMMENT '归属账号',
+  real_name     VARCHAR(32)      NOT NULL COMMENT '观演人姓名',
+  id_card       VARCHAR(32)      NOT NULL COMMENT '证件号（真实项目应加密存储，这里明文演示）',
+  id_card_type  TINYINT UNSIGNED NOT NULL DEFAULT 1
+                COMMENT '1身份证 2港澳居民来往内地通行证 3台湾居民来往大陆通行证 4护照',
+  verify_status TINYINT UNSIGNED NOT NULL DEFAULT 0
+                COMMENT '0未认证 1已认证 2认证失败；强实名场次只有 1 能下单',
+  create_time   TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time   TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_user_idcard (user_id, id_card) COMMENT '同一账号不能重复添加同一个人',
+  KEY idx_idcard (id_card)                     COMMENT '客服/风控按证件反查'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户常用观演人（实名信息库）';
+
+-- ------------------------------------------------------------
+-- 13. 订单观演人（一票一人）
+--     订单买 N 张票就有 N 行，seq 就是第几张。
+--
+--     ★ uk_session_idcard 是"一证一票"的最终兜底：同一场次、同一个证件
+--       只能出现一次。并发插入会直接撞唯一索引失败 —— 不需要分布式锁。
+--
+--     ⚠ 取消/超时释放时必须 DELETE 这些行，否则证件被永久占用、用户重买不了。
+--       想保留历史的话，把唯一键改成 (session_id, id_card, active)：
+--       active=1 表示有效占用，NULL 表示已释放（MySQL 唯一索引允许多个 NULL）。
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS tb_order_attendee;
+CREATE TABLE tb_order_attendee (
+  id          BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  order_id    BIGINT UNSIGNED  NOT NULL COMMENT '订单号',
+  session_id  BIGINT UNSIGNED  NOT NULL COMMENT '冗余场次ID；"一证一票"的唯一约束靠它划作用域',
+  attendee_id BIGINT UNSIGNED  NOT NULL DEFAULT 0 COMMENT 'tb_user_attendee.id；0=没有关联观演人库',
+  seq         TINYINT UNSIGNED NOT NULL COMMENT '第几张票，从 1 开始',
+  real_name   VARCHAR(32)      NOT NULL COMMENT '观演人姓名（冗余，出票时直接取）',
+  id_card     VARCHAR(32)      NOT NULL COMMENT '证件号（冗余，唯一索引要用它）',
+  create_time TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_order_seq      (order_id, seq)       COMMENT '一单内位置唯一',
+  UNIQUE KEY uk_session_idcard (session_id, id_card) COMMENT '一证一票：同场次同证件只能一张',
+  KEY idx_idcard (id_card)                           COMMENT '按证件反查'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单观演人（一证一票的唯一约束在这里）';
 
 -- ============================================================
 -- 种子数据
@@ -318,35 +370,37 @@ INSERT INTO tb_show (id, name, artist, venue_id, city, category_id, poster, imag
  '情人节特别场。六组民谣音乐人，一把木吉他，一个不插电的夜晚。');
 
 -- 场次（演出 1：星野乐队，三场）
-INSERT INTO tb_show_session (id, show_id, session_name, session_time, on_sale_time, status) VALUES
-(1, 1, '周五 19:30', '2026-11-14 19:30:00', '2026-10-20 12:00:00', 0),
-(2, 1, '周六 19:30', '2026-11-15 19:30:00', '2026-10-20 12:00:00', 0),
-(3, 1, '周日 19:00', '2026-11-16 19:00:00', '2026-10-20 12:00:00', 0);
+-- 场次 1、2 已开票（status=2），用于抢票/支付/票夹演示；
+-- 场次 3 保持未开票（status=0），on_sale_time 设为未来时间，用于开票倒计时演示。
+INSERT INTO tb_show_session (id, show_id, session_name, session_time, on_sale_time, purchase_limit, status) VALUES
+(1, 1, '周六 19:30', '2026-11-14 19:30:00', '2026-10-01 12:00:00', 6, 2),
+(2, 1, '周日 19:30', '2026-11-15 19:30:00', '2026-10-01 12:00:00', 6, 2),
+(3, 1, '周一 19:00', '2026-11-16 19:00:00', '2026-11-01 12:00:00', 6, 0);
 
 -- 票档（场次 1-3，体育馆对号入座 seat_type=0）
 -- stock 初值 = total_stock（还没卖出去一张）
-INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, purchase_limit, status) VALUES
+INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, max_per_order, status) VALUES
 (1, 1, '内场 VIP', 1280.00, '舞台前区', 0,  400,  400, 2, 1),
 (1, 1, '看台 A',    880.00, '一层看台', 0, 1500, 1500, 4, 1),
 (1, 1, '看台 B',    580.00, '二层看台', 0, 3000, 3000, 4, 1);
 
-INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, purchase_limit, status) VALUES
+INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, max_per_order, status) VALUES
 (2, 1, '内场 VIP', 1280.00, '舞台前区', 0,  400,  400, 2, 1),
 (2, 1, '看台 A',    880.00, '一层看台', 0, 1500, 1500, 4, 1),
 (2, 1, '看台 B',    580.00, '二层看台', 0, 3000, 3000, 4, 1);
 
-INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, purchase_limit, status) VALUES
+INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, max_per_order, status) VALUES
 (3, 1, '内场 VIP', 1180.00, '舞台前区', 0,  400,  400, 2, 1),
 (3, 1, '看台 A',    780.00, '一层看台', 0, 1500, 1500, 4, 1),
 (3, 1, '看台 B',    480.00, '二层看台', 0, 3000, 3000, 4, 1);
 
 -- 场次（演出 4：草莓星球音乐节，两天）
-INSERT INTO tb_show_session (id, show_id, session_name, session_time, on_sale_time, status) VALUES
-(4, 4, 'Day 1 · 11月28日', '2026-11-28 13:00:00', '2026-11-01 20:00:00', 0),
-(5, 4, 'Day 2 · 11月29日', '2026-11-29 13:00:00', '2026-11-01 20:00:00', 0);
+INSERT INTO tb_show_session (id, show_id, session_name, session_time, on_sale_time, purchase_limit, status) VALUES
+(4, 4, 'Day 1 · 11月28日', '2026-11-28 13:00:00', '2026-11-01 20:00:00', 6, 0),
+(5, 4, 'Day 2 · 11月29日', '2026-11-29 13:00:00', '2026-11-01 20:00:00', 6, 0);
 
 -- 票档（场次 4-5，音乐节全场站席 seat_type=1 —— 出票时不会生成座位号）
-INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, purchase_limit, status) VALUES
+INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, max_per_order, status) VALUES
 (4, 4, '单日预售票', 380.00, '全场站席', 1, 8000, 8000, 4, 1),
 (4, 4, 'VIP 通票',   880.00, '前排区',   1, 1000, 1000, 2, 1),
 (5, 4, '单日预售票', 380.00, '全场站席', 1, 8000, 8000, 4, 1),
@@ -427,6 +481,21 @@ WHERE o.id IS NULL;
 SELECT '孤儿: tb_user_purchase.user_id' AS chk, p.id, p.user_id
 FROM tb_user_purchase p LEFT JOIN tb_user u ON u.id = p.user_id
 WHERE u.id IS NULL;
+
+-- 观演人库引用了不存在的用户
+SELECT '孤儿: tb_user_attendee.user_id' AS chk, a.id, a.user_id
+FROM tb_user_attendee a LEFT JOIN tb_user u ON u.id = a.user_id
+WHERE u.id IS NULL;
+
+-- 订单观演人引用了不存在的订单
+SELECT '孤儿: tb_order_attendee.order_id' AS chk, a.id, a.order_id
+FROM tb_order_attendee a LEFT JOIN tb_ticket_order o ON o.id = a.order_id
+WHERE o.id IS NULL;
+
+-- 订单观演人引用了不存在的观演人（attendee_id=0 表示没关联观演人库，跳过）
+SELECT '孤儿: tb_order_attendee.attendee_id' AS chk, a.id, a.attendee_id
+FROM tb_order_attendee a LEFT JOIN tb_user_attendee ua ON ua.id = a.attendee_id
+WHERE a.attendee_id <> 0 AND ua.id IS NULL;
 
 -- 订单与票的三条冗余列必须和票档对得上
 -- （订单表冗余了 show_id / session_id，票表又冗余了一遍，冗余就要校验）

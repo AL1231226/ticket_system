@@ -3,6 +3,8 @@ package com.liule.ticket.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
@@ -23,6 +25,8 @@ public class TicketOrder implements Serializable {
      * 订单号。由 RedisIdWorker 生成，不是数据库自增，所以是 IdType.INPUT
      */
     @TableId(value = "id", type = IdType.INPUT)
+    // 64 位订单号超出 JS Number 的安全整数范围，必须按字符串返回，否则前端会丢精度
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long id;
 
     /**
@@ -61,12 +65,8 @@ public class TicketOrder implements Serializable {
     private Integer status;
 
     /**
-     * 实名信息
+     * 联系电话
      */
-    private String realName;
-
-    private String idCard;
-
     private String phone;
 
     /**

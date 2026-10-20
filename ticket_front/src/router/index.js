@@ -3,7 +3,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { TOKEN_KEY } from '@/utils/request'
 
 const routes = [
-  { path: '/', redirect: '/home' },
   {
     path: '/login',
     name: 'login',
@@ -14,15 +13,68 @@ const routes = [
     meta: { guestOnly: true },
   },
   {
-    path: '/home',
-    name: 'home',
-    component: () => import('@/views/home.vue'),
+    path: '/',
+    component: () => import('@/views/TabLayout.vue'),
+    children: [
+      { path: '', redirect: '/home' },
+      {
+        path: 'home',
+        name: 'home',
+        component: () => import('@/views/home.vue'),
+        // 浏览演出不需要登录，和拦截器白名单保持一致
+        meta: { public: true },
+      },
+      {
+        path: 'wallet',
+        name: 'wallet',
+        component: () => import('@/views/wallet.vue'),
+      },
+      {
+        path: 'mine',
+        name: 'mine',
+        component: () => import('@/views/mine.vue'),
+      },
+    ],
+  },
+  {
+    path: '/show/:id',
+    name: 'show-detail',
+    component: () => import('@/views/show-detail.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/seckill/:tierId',
+    name: 'seckill',
+    component: () => import('@/views/seckill.vue'),
+  },
+  {
+    path: '/queue/:orderId',
+    name: 'queue',
+    component: () => import('@/views/queue.vue'),
+  },
+  {
+    path: '/order/:orderId',
+    name: 'order-detail',
+    component: () => import('@/views/order-detail.vue'),
+  },
+  {
+    path: '/orders',
+    name: 'orders',
+    component: () => import('@/views/orders.vue'),
+  },
+  {
+    path: '/attendees',
+    name: 'attendees',
+    component: () => import('@/views/attendees.vue'),
   },
 ]
 
 const router = createRouter({
   history: createWebHistory(),
   routes,
+  scrollBehavior() {
+    return { top: 0 }
+  },
 })
 
 // 全局前置守卫：每次跳转前都会跑一遍，拦截掉不该进的页面。
@@ -33,8 +85,8 @@ router.beforeEach((to) => {
   if (to.meta.guestOnly && hasToken) {
     return { name: 'home' }
   }
-  // 默认所有页面都要登录；无需登录的页自己在 meta 里标 guestOnly
-  if (!to.meta.guestOnly && !hasToken) {
+  // 公开页（首页、演出详情）不登录也能看；其余页面没有 token 就回登录页
+  if (!to.meta.public && !to.meta.guestOnly && !hasToken) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   return true

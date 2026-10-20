@@ -25,3 +25,17 @@ export function logout() {
 export function getMe() {
   return request.get('/user/me')
 }
+
+/** 用户详情：等级、积分、粉丝、观演场次等。 */
+export function getUserInfo(userId) {
+  return request.get(`/user/info/${userId}`)
+}
+
+export function sign() {
+  return request.post('/user/sign')
+}
+
+/** 本月连续签到天数。 */
+export function getSignCount() {
+  return request.get('/user/sign/count')
+}

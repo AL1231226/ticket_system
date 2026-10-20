@@ -23,11 +23,12 @@ request.interceptors.response.use(
   // 这里把外壳剥掉，业务代码直接拿 data；失败则抛出带后端原文的 Error，
   // 由调用方决定怎么展示（登录页是行内提示，不是全局 toast）。
   (response) => {
-    const { success, errorMsg, data } = response.data
+    const { success, errorMsg, data, total } = response.data
     if (!success) {
       return Promise.reject(new Error(errorMsg || '请求失败'))
     }
-    return data
+    // 列表接口需要 total 做分页；普通接口仍然只返回 data，保持现有调用方不变。
+    return response.config.withTotal ? { data, total } : data
   },
   (error) => {
     const status = error.response?.status
