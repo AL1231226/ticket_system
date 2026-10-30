@@ -16,4 +16,7 @@ public interface IUserService extends IService<User> {
     Result sign();
 
     Result signCount();
+
+    /** 公开个人主页：资料 + 粉丝/关注/动态数 + isFollowing */
+    Result queryPublicProfile(Long userId);
 }

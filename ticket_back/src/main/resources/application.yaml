@@ -6,6 +6,10 @@ server:
 spring:
   application:
     name: ticket_back
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 10MB
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     # 4 个参数都不是可有可无的：
@@ -38,6 +42,11 @@ mybatis-plus:
   type-aliases-package: com.liule.ticket.entity # 别名扫描包
   configuration:
     map-underscore-to-camel-case: true # create_time → createTime
+
+# 社区 Feed 推拉阈值：粉丝数不超过该值的作者发布时扇出，超过的读时合并
+ticket:
+  feed:
+    big-v-follower-threshold: 1000
 
 logging:
   level:

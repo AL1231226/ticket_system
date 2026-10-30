@@ -77,6 +77,12 @@ public class UserController {
         return Result.ok(info);
     }
 
+    /** 公开个人主页：游客可读，登录时带 isFollowing */
+    @GetMapping("/profile/{id}")
+    public Result profile(@PathVariable("id") Long userId){
+        return userService.queryPublicProfile(userId);
+    }
+
     @GetMapping("/{id}")
     public Result getUser(@PathVariable("id") Long id){
         // 查询用户

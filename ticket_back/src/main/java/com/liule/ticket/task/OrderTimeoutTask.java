@@ -21,8 +21,13 @@ import java.util.List;
  * 这个任务定期把过期单捞出来作废，回补四处资源（见
  * {@link IOrderService#invalidateOrder}）。
  * <p>
- * <b>为什么用扫表而不是延迟队列</b>：量小的时候扫表最直观、最好排查。
- * Plan 3 再换成 Redis ZSet 延迟队列（到期精确触发，不用扫）。
+ * <b>主路径已经是 {@link DelayQueueTask}</b>（ZSet，10 秒扫描）；这里保留为
+ * 30 秒对账兜底，原因有两个：
+ * <ul>
+ *   <li>{@code plan2-e2e.sh} 直接 {@code UPDATE expire_time}，ZSet 里的 score
+ *       不会跟着变，只靠延迟队列会让现有超时用例失败；</li>
+ *   <li>Redis 抖动或延迟队列写失败时，过期的待支付单仍然要最终被释放。</li>
+ * </ul>
  */
 @Slf4j
 @Component

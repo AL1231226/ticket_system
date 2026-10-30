@@ -7,9 +7,12 @@ import AppIcon from '@/components/AppIcon.vue'
 import QrCode from '@/components/QrCode.vue'
 import StateView from '@/components/StateView.vue'
 import TicketStub from '@/components/TicketStub.vue'
+import UnreadBadge from '@/components/UnreadBadge.vue'
+import { useUnreadPolling } from '@/composables/useUnreadPolling'
 import { formatSessionDate } from '@/utils/format'
 
 const router = useRouter()
+const { unread } = useUnreadPolling()
 
 const tickets = ref([])
 const loading = ref(true)
@@ -119,9 +122,12 @@ function goHome() {
         <h1>我的票夹</h1>
         <p>共 {{ totalCount }} 张票 · {{ validCount }} 张待使用</p>
       </div>
-      <button class="wallet__refresh" type="button" aria-label="刷新票夹" @click="loadTickets">
-        <AppIcon name="refresh" :size="17" />
-      </button>
+      <div class="wallet__actions">
+        <button class="wallet__refresh" type="button" aria-label="刷新票夹" @click="loadTickets">
+          <AppIcon name="refresh" :size="17" />
+        </button>
+        <UnreadBadge :unread="unread" />
+      </div>
     </header>
 
     <div v-if="loading" class="wallet__skeletons">
@@ -225,6 +231,12 @@ function goHome() {
     color: var(--text-3);
     font-size: 10px;
   }
+}
+
+.wallet__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .wallet__refresh {

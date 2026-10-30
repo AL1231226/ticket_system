@@ -1,6 +1,7 @@
 package com.liule.ticket.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.liule.ticket.dto.OrderVO;
 import com.liule.ticket.dto.Result;
@@ -9,6 +10,7 @@ import com.liule.ticket.dto.UserDTO;
 import com.liule.ticket.entity.OrderAttendee;
 import com.liule.ticket.entity.Show;
 import com.liule.ticket.entity.ShowSession;
+import com.liule.ticket.entity.Ticket;
 import com.liule.ticket.entity.TicketOrder;
 import com.liule.ticket.entity.TicketTier;
 import com.liule.ticket.entity.UserAttendee;
@@ -16,12 +18,16 @@ import com.liule.ticket.exception.BizException;
 import com.liule.ticket.mapper.OrderAttendeeMapper;
 import com.liule.ticket.mapper.TicketOrderMapper;
 import com.liule.ticket.mapper.UserPurchaseMapper;
+import com.liule.ticket.service.IDelayQueueService;
 import com.liule.ticket.service.IOrderService;
+import com.liule.ticket.service.IReflowService;
+import com.liule.ticket.service.IRiskControlService;
 import com.liule.ticket.service.IShowService;
 import com.liule.ticket.service.IShowSessionService;
 import com.liule.ticket.service.ITicketService;
 import com.liule.ticket.service.ITicketTierService;
 import com.liule.ticket.service.IUserAttendeeService;
+import com.liule.ticket.service.IWaitlistService;
 import com.liule.ticket.utils.RedisConstants;
 import com.liule.ticket.utils.RedisIdWorker;
 import com.liule.ticket.utils.StreamConsumer;
@@ -39,6 +45,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -81,6 +89,18 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
 
     @Resource
     private ITicketService ticketService;
+
+    @Resource
+    private IReflowService reflowService;
+
+    @Resource
+    private IDelayQueueService delayQueueService;
+
+    @Resource
+    private IWaitlistService waitlistService;
+
+    @Resource
+    private IRiskControlService riskControlService;
 
     /**
      * 注入自己，唯一目的是拿到 Spring 代理。
@@ -138,34 +158,37 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
             return false;
         }
 
+        // 候补补位订单作废时同步候补行：主动取消 → 4 已取消，超时 → 3 已过期。
+        // 普通订单这里更新 0 行，不影响。
+        if (Integer.valueOf(1).equals(order.getSource())) {
+            int waitlistStatus = targetStatus == 2 ? 4 : 3;
+            int rows = waitlistService.syncByOrderId(orderId, 1, waitlistStatus);
+            if (rows == 0) {
+                log.warn("补位订单 {} 作废，但候补行状态未同步", orderId);
+            }
+        }
+
         int quantity = order.getQuantity();
 
-        // 1. DB 库存：可售 +n、占用 -n。两个列一条 UPDATE，保持 total = stock + lock 不变。
-        boolean returned = ticketTierService.update()
-                .setSql("stock = stock + " + quantity
-                        + ", lock_stock = lock_stock - " + quantity)
-                .eq("id", order.getTierId())
-                .ge("lock_stock", quantity)
-                .update();
-        if (!returned) {
-            // 正常情况锁定量一定够（下单时刚加过）。走到这说明数据被动过，
-            // 抛出去让整个事务回滚，避免"订单作废了、库存却没还回去"。
-            throw new IllegalStateException(
-                    "订单 " + orderId + " 回补库存失败：lock_stock 不足");
-        }
+        // 1. 库存去向统一交给 ReflowService：候补优先，队列空才回公开池。
+        //    这里不再自己决定 stock / lock_stock 怎么改。
+        reflowService.release(order.getTierId(), order.getSessionId(), quantity);
 
         // 2. DB 限购兜底表：不减的话，用户取消后想重买会被自己的旧计数挡住。
         userPurchaseMapper.decrease(order.getUserId(), order.getSessionId(), quantity);
 
-        // 3. Redis：库存 +n、限购计数 -n。
-        //    秒杀侧是按 Redis 判的，不还就会出现假售罄 / 用户被自己挡住。
-        releaseReservation(order.getTierId(), order.getSessionId(), order.getUserId(), quantity);
+        // 3. Redis 限购计数 -n。秒杀侧按 Redis 判，不退用户会被自己的旧计数挡住。
+        //    库存的 Redis 回补已经在 release 里做了，这里只处理限购。
+        decreaseRedisOrderedCount(order.getSessionId(), order.getUserId(), quantity);
 
         // 4. 释放观演人：删掉本订单绑定的观演人行。
         //    不删的话，uk_session_idcard 会把这几个证件永久占住 ——
         //    用户取消/超时后再也买不了同一场次。
         orderAttendeeMapper.delete(new LambdaQueryWrapper<OrderAttendee>()
                 .eq(OrderAttendee::getOrderId, orderId));
+
+        // 5. 已作废的订单不该再被支付超时定时器扫到。
+        delayQueueService.remove(orderId);
 
         return true;
     }
@@ -208,6 +231,89 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
         // 出票失败会连状态一起回滚，不会出现"付了钱却没有票"。
         ticketService.issueTickets(order);
 
+        // 候补补位订单支付成功 → 候补行 1→2 已购票；普通订单更新 0 行。
+        if (Integer.valueOf(1).equals(order.getSource())) {
+            int rows = waitlistService.syncByOrderId(Long.valueOf(orderId), 1, 2);
+            if (rows == 0) {
+                log.warn("补位订单 {} 支付成功，但候补行状态未同步", orderId);
+            }
+        }
+
+        // 已支付订单不再需要支付超时定时器。
+        delayQueueService.remove(Long.valueOf(orderId));
+
+        return Result.ok(orderId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result refundOrder(String orderId) {
+        Long id = Long.valueOf(orderId);
+        TicketOrder order = getById(id);
+        if (order == null) {
+            return Result.fail("订单不存在");
+        }
+        UserDTO user = UserHolder.getUser();
+        if (user == null || !user.getId().equals(order.getUserId())) {
+            return Result.fail("无权限退款该订单");
+        }
+        if (!Integer.valueOf(1).equals(order.getStatus())) {
+            return Result.fail("仅已支付订单可退款");
+        }
+
+        // 整单退：先确认每张票都还没核销。任意一张已核销/已退就拒绝，不做部分退款。
+        Long unused = ticketService.count(new LambdaQueryWrapper<Ticket>()
+                .eq(Ticket::getOrderId, id)
+                .eq(Ticket::getStatus, 0));
+        if (unused == null || unused.longValue() != order.getQuantity().longValue()) {
+            return Result.fail("订单中有票已核销或已退，整单不可退款");
+        }
+
+        // 条件更新：并发重复退款时只有一次能成功。
+        boolean updated = update()
+                .set("status", 3)
+                .set("refund_time", LocalDateTime.now())
+                .eq("id", id)
+                .eq("status", 1)
+                .update();
+        if (!updated) {
+            return Result.fail("订单状态不允许退款");
+        }
+
+        // 票 → 已退。仍然带 status=0 条件并校验行数：
+        // 预检查之后、这一行之前如果正好发生了核销，这里会少更新一张，直接回滚整单。
+        int refundedTickets = ticketService.getBaseMapper().update(
+                new LambdaUpdateWrapper<Ticket>()
+                        .set(Ticket::getStatus, 2)
+                        .eq(Ticket::getOrderId, id)
+                        .eq(Ticket::getStatus, 0));
+        if (refundedTickets != order.getQuantity()) {
+            throw new BizException("订单中有票已核销，整单不可退款");
+        }
+
+        // 候补补位订单退款 → 候补行 2→4 已取消（失去位置，可重新排队）。
+        if (Integer.valueOf(1).equals(order.getSource())) {
+            int rows = waitlistService.syncByOrderId(id, 2, 4);
+            if (rows == 0) {
+                log.warn("补位订单 {} 退款，但候补行状态未同步", id);
+            }
+        }
+
+        // 库存去向统一交给 ReflowService：候补优先，队列空才回公开池。
+        reflowService.release(order.getTierId(), order.getSessionId(), order.getQuantity());
+
+        // 退款后归还限购额度，否则用户退完票也再买不了。
+        userPurchaseMapper.decrease(order.getUserId(), order.getSessionId(), order.getQuantity());
+        decreaseRedisOrderedCount(order.getSessionId(), order.getUserId(), order.getQuantity());
+
+        // 释放观演人证件：不删的话 uk_session_idcard 会把证件永久占住。
+        orderAttendeeMapper.delete(new LambdaQueryWrapper<OrderAttendee>()
+                .eq(OrderAttendee::getOrderId, id));
+
+        // 已支付订单支付时已出队；这里防御性再删一次，重复退款也不会留下定时器。
+        delayQueueService.remove(id);
+
+        log.info("订单 {} 退款成功，回补 {} 张票", id, order.getQuantity());
         return Result.ok(orderId);
     }
 
@@ -292,22 +398,29 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
     }
 
     @Override
-    public Result seckill(SeckillFormDTO form) {
+    public Result seckill(SeckillFormDTO form, String ip, String deviceId) {
         // 1. 获取用户信息
         UserDTO userDTO = UserHolder.getUser();
         Long userId = userDTO.getId();
-        //2.校验抢票信息
+
+        // 2. 风控：用户/IP 频率超限直接拒绝；设备多账号只记录不拦截。
+        //    放在业务校验之前，失败的抢票请求也计数 —— 防脚本试探。
+        if (!riskControlService.check(userId, ip, deviceId)) {
+            return Result.fail("操作过于频繁，请稍后再试");
+        }
+
+        // 3. 校验抢票信息
         Result result = checkSeckillInformation(form);
         if (!result.getSuccess()) {
             return Result.fail(result.getErrorMsg());
         }
         TicketTier ticketTier = (TicketTier) result.getData();
-        //3.查对应票档在redis里有库存
+        // 4. 查对应票档在 redis 里有库存
         Long stock = ticketTierService.queryStock(form.getTierId());
         if (stock <= 0) {
             return Result.fail("票档库存不足");
         }
-        //4.将订单信息加入异步队列
+        // 5. 将订单信息加入异步队列
         //   累计限购的上限取自【场次】，不是票档 —— 两个旋钮互相独立：
         //     场次的 purchase_limit  管"这个账号在本场次总共能买几张"，由 Lua 按账号累计判；
         //     票档的 max_per_order   管"一笔订单最多几张"，已在 checkSeckillInformation 里判过。
@@ -423,12 +536,39 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void createOrder(Long orderId, Long userId, Long tierId, Long sessionId, Integer quantity) {
-
         if (getById(orderId) != null) {
             log.info("订单 {} 已存在，跳过重复消费", orderId);
             return;
         }
+        createOrderInternal(orderId, userId, tierId, sessionId, quantity, 0,
+                LocalDateTime.now().plusMinutes(SystemConstants.ORDER_PAY_TIMEOUT_MINUTES));
+    }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void createWaitlistOrder(Long orderId, Long userId, Long tierId, Long sessionId,
+                                    Integer quantity, LocalDateTime expireTime) {
+        if (getById(orderId) != null) {
+            // 补位订单号是分配时现生成的，正常不可能撞号；走到这里说明数据异常
+            log.warn("补位订单 {} 已存在，跳过重复建单", orderId);
+            return;
+        }
+
+        createOrderInternal(orderId, userId, tierId, sessionId, quantity, 1, expireTime);
+
+        // 秒杀路径的 Redis 限购计数由 Lua 原子加；候补路径没有 Lua，必须自己补。
+        // 放到事务提交后执行：事务回滚时不能留下一条不存在的购买记录。
+        incrementOrderedAfterCommit(sessionId, userId, quantity);
+        log.info("候补补位订单 {} 落库成功", orderId);
+    }
+
+    /**
+     * 秒杀与候补共用的建单逻辑。调用方保证 orderId 不存在。
+     *
+     * @param source 0 正常抢票 / 1 候补补位
+     */
+    private void createOrderInternal(Long orderId, Long userId, Long tierId, Long sessionId,
+                                     Integer quantity, int source, LocalDateTime expireTime) {
         TicketTier tier = ticketTierService.getById(tierId);
         if (tier == null) {
             throw new BizException("票档不存在");
@@ -472,30 +612,71 @@ public class OrderServiceImpl extends ServiceImpl<TicketOrderMapper, TicketOrder
                 .setQuantity(quantity)
                 .setAmount(tier.getPrice().multiply(BigDecimal.valueOf(quantity)))
                 .setStatus(0)   // 0待支付
-                .setSource(0)   // 0正常抢票
-                .setExpireTime(LocalDateTime.now()
-                        .plusMinutes(SystemConstants.ORDER_PAY_TIMEOUT_MINUTES));
+                .setSource(source)
+                .setExpireTime(expireTime);
         save(order);
 
-        log.info("订单 {} 落库成功", orderId);
+        // 落库成功后加入支付超时延迟队列。这里在事务提交前写 Redis：
+        // 万一事务回滚，队列里会残留一条记录，到期时 invalidateOrder
+        // 找不到订单会直接返回 false，任务随后把它删掉，不会重复回补。
+        delayQueueService.add(order.getId(), order.getExpireTime());
+
+        log.info("订单 {} 落库成功（source={}）", orderId, source);
+    }
+
+    /**
+     * 候补建单的 Redis 限购计数补偿。
+     * <p>
+     * 必须在事务提交后执行：DB 回滚了，Redis 不能留下一个凭空的已购数量。
+     */
+    private void incrementOrderedAfterCommit(Long sessionId, Long userId, Integer quantity) {
+        Runnable increment = () -> {
+            try {
+                stringRedisTemplate.opsForHash().increment(
+                        RedisConstants.SECKILL_ORDERED_KEY + sessionId,
+                        userId.toString(), quantity);
+            } catch (Exception e) {
+                // Redis 只是限购的快判据；漏加最多让用户多抢一次，DB 兜底表仍会拦住
+                log.error("候补订单 Redis 限购计数 +{} 失败：sessionId={}, userId={}",
+                        quantity, sessionId, userId, e);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    increment.run();
+                }
+            });
+        } else {
+            increment.run();
+        }
     }
 
     @Override
     public void releaseReservation(Long tierId, Long sessionId, Long userId, Integer quantity) {
-        // 先判 key 存在 —— INCRBY 会把不存在的 key 当 0 再加，凭空造出 quantity 张票。
-        // DB 才是库存的权威值，Redis 这边少一个 key 就说明它本来就没扣过。
+        // 只服务落库失败补偿：此时 DB 事务已回滚，库存只存在于 Redis，不能走 ReflowService
+        // （那会把 DB 库存也加回去）。先判 key 存在 —— INCRBY 会把不存在的 key 当 0 再加，
+        // 凭空造出 quantity 张票。
         String stockKey = RedisConstants.SECKILL_STOCK_KEY + tierId;
         if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(stockKey))) {
             stringRedisTemplate.opsForValue().increment(stockKey, quantity);
         }
 
         // 限购计数同理：不退的话，用户下次抢会被自己这条"不存在的订单"挡住
+        decreaseRedisOrderedCount(sessionId, userId, quantity);
+    }
+
+    /**
+     * 减少用户在场次的 Redis 累计限购计数。退到 0 时删掉 field，不留下 0。
+     */
+    private void decreaseRedisOrderedCount(Long sessionId, Long userId, Integer quantity) {
         String orderedKey = RedisConstants.SECKILL_ORDERED_KEY + sessionId;
         if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(orderedKey))) {
             Long left = stringRedisTemplate.opsForHash()
                     .increment(orderedKey, userId.toString(), -quantity);
             if (left != null && left <= 0) {
-                // 退到 0 就把 field 删掉，别在 Hash 里留一堆 0
                 stringRedisTemplate.opsForHash().delete(orderedKey, userId.toString());
             }
         }

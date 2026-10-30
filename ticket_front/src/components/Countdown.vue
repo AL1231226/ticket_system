@@ -8,6 +8,8 @@ const props = defineProps({
   target: { type: [String, Number, Date], default: '' },
   label: { type: String, default: '距开票' },
   compact: { type: Boolean, default: false },
+  // brand = 粉金渐变（开票/支付）；waitlist = 紫色渐变（候补补位）
+  tone: { type: String, default: 'brand' },
 })
 
 const targetRef = computed(() => props.target)
@@ -15,7 +17,14 @@ const { remaining } = useCountdown(targetRef)
 </script>
 
 <template>
-  <div class="countdown" :class="{ 'is-expired': remaining.expired, 'is-compact': compact }">
+  <div
+    class="countdown"
+    :class="{
+      'is-expired': remaining.expired,
+      'is-compact': compact,
+      'is-tone-waitlist': tone === 'waitlist',
+    }"
+  >
     <span class="countdown__label">{{ label }}</span>
     <div class="countdown__time num">
       <template v-if="remaining.days > 0">
@@ -86,6 +95,12 @@ const { remaining } = useCountdown(targetRef)
     font-size: 15px;
     letter-spacing: 0.6px;
   }
+}
+
+.countdown.is-tone-waitlist .countdown__time {
+  background: linear-gradient(92deg, #7b61ff, #a78bfa);
+  background-clip: text;
+  -webkit-background-clip: text;
 }
 
 .countdown.is-expired {

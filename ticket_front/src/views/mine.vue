@@ -5,10 +5,13 @@ import { useRouter } from 'vue-router'
 import { getSignCount, getUserInfo, sign } from '@/api/user'
 import AppIcon from '@/components/AppIcon.vue'
 import StateView from '@/components/StateView.vue'
+import UnreadBadge from '@/components/UnreadBadge.vue'
+import { useUnreadPolling } from '@/composables/useUnreadPolling'
 import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
 const userStore = useUserStore()
+const { unread } = useUnreadPolling()
 
 const info = ref(null)
 const signDays = ref(0)
@@ -32,11 +35,19 @@ const stats = computed(() => [
   { label: '积分', value: info.value?.credits || 0 },
 ])
 
-const menu = [
+const menu = computed(() => [
   { icon: 'receipt', label: '我的订单', hint: '查看全部订单', to: '/orders' },
+  { icon: 'hourglass', label: '我的候补', hint: '排队位置与补位提醒', to: '/waitlists' },
   { icon: 'users', label: '观演人管理', hint: '实名信息与一证一票', to: '/attendees' },
   { icon: 'ticket', label: '我的票夹', hint: '电子票与动态二维码', to: '/wallet' },
-]
+  {
+    icon: 'bell',
+    label: '消息',
+    hint: unread.value > 0 ? `${unread.value} 条未读` : '候补补位与订单通知',
+    to: '/notifications',
+    badge: unread.value,
+  },
+])
 
 onMounted(load)
 
@@ -119,6 +130,8 @@ async function logout() {
             <span v-if="city" class="mine__city">{{ city }}</span>
           </div>
         </div>
+
+        <UnreadBadge :unread="unread" class="mine__bell" />
       </header>
 
       <section class="mine__stats">
@@ -166,6 +179,9 @@ async function logout() {
           <span class="mine__item-text">
             <b>{{ item.label }}</b>
             <small>{{ item.hint }}</small>
+          </span>
+          <span v-if="item.badge > 0" class="mine__item-badge">
+            {{ item.badge > 99 ? '99+' : item.badge }}
           </span>
           <AppIcon name="chevron-right" :size="16" class="mine__arrow" />
         </button>
@@ -252,6 +268,10 @@ async function logout() {
 .mine__city {
   color: var(--text-3);
   font-size: 9px;
+}
+
+.mine__bell {
+  margin-left: auto;
 }
 
 .mine__stats {
@@ -425,6 +445,21 @@ async function logout() {
     color: var(--text-3);
     font-size: 8.5px;
   }
+}
+
+.mine__item-badge {
+  min-width: 16px;
+  height: 16px;
+  margin-right: 7px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
 }
 
 .mine__arrow {

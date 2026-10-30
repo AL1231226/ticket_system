@@ -44,4 +44,38 @@ public class RedisConstants {
     public static final String ORDER_STREAM_KEY = "stream.orders";
     public static final String ORDER_STREAM_GROUP = "g1";
     public static final String ORDER_STREAM_CONSUMER = "c1";
+
+    // ==================== Plan 3：回流 / 候补 / 风控 ====================
+
+    /** 支付超时延迟队列：member=orderId，score=到期时间戳(ms) */
+    public static final String DELAY_ORDER_PAY_KEY = "ticker:delay:order:pay";
+
+    /** 回流分配锁：票档级，保护「查候补 → 分配/回池」临界区 */
+    public static final String REFLOW_LOCK_KEY = "ticker:lock:reflow:";
+
+    /** 候补队列：member=userId，score=入队时间戳(ms) */
+    public static final String WAITLIST_QUEUE_KEY = "ticker:waitlist:queue:";
+
+    /** 用户级滑动窗口限流 */
+    public static final String LIMIT_USER_KEY = "ticker:limit:user:";
+
+    /** IP 级滑动窗口限流 */
+    public static final String LIMIT_IP_KEY = "ticker:limit:ip:";
+
+    /** 设备-账号集合，用于一设备多账号检测 */
+    public static final String DEVICE_USERS_KEY = "ticker:device:users:";
+
+    // ==================== Plan 4：社区 Feed ====================
+
+    /** 全站最新 Feed：ZSet，member=postId，score=发布时间(ms) */
+    public static final String FEED_GLOBAL_KEY = "ticker:feed:global";
+
+    /** 个人 Feed：ZSet，完整 key 为 ticker:feed:{userId} */
+    public static final String FEED_USER_KEY = "ticker:feed:";
+
+    /** 用户关注集合：Set，完整 key 为 ticker:follow:{userId} */
+    public static final String FOLLOW_USER_KEY = "ticker:follow:";
+
+    /** 动态点赞镜像：ZSet，member=userId，score=点赞时间(ms)，完整 key 为 ticker:post:liked:{postId} */
+    public static final String POST_LIKED_KEY = "ticker:post:liked:";
 }

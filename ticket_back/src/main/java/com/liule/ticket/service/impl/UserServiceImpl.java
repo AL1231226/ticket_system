@@ -3,13 +3,18 @@ package com.liule.ticket.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.liule.ticket.dto.LoginFormDTO;
 import com.liule.ticket.dto.Result;
 import com.liule.ticket.dto.UserDTO;
+import com.liule.ticket.dto.UserProfileVO;
+import com.liule.ticket.entity.Post;
 import com.liule.ticket.entity.User;
 import com.liule.ticket.entity.UserInfo;
+import com.liule.ticket.mapper.PostMapper;
 import com.liule.ticket.mapper.UserMapper;
+import com.liule.ticket.service.IFollowService;
 import com.liule.ticket.service.IUserInfoService;
 import com.liule.ticket.service.IUserService;
 import com.liule.ticket.utils.RegexUtils;
@@ -42,6 +47,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Resource
     private IUserInfoService userInfoService;
 
+    @Resource
+    private PostMapper postMapper;
+
+    @Resource
+    private IFollowService followService;
+
     @Override
     public Result sendcode(String phone) {
         // 验证手机号
@@ -55,6 +66,54 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 发送验证码（模拟）
         log.debug("发送验证码成功：{}", code);
         return Result.ok();
+    }
+
+    @Override
+    public Result queryPublicProfile(Long userId) {
+        if (userId == null) {
+            return Result.fail("用户不存在");
+        }
+        User user = getById(userId);
+        if (user == null) {
+            return Result.fail("用户不存在");
+        }
+
+        UserInfo info = userInfoService.getById(userId);
+        UserProfileVO vo = new UserProfileVO();
+        vo.setUserId(userId);
+        vo.setNickname(user.getNickname());
+        vo.setIcon(user.getIcon());
+        if (info == null) {
+            // 历史/测试用户可能没有详情行，给展示默认值而不是报错
+            vo.setIntroduce("");
+            vo.setCity("");
+            vo.setGender(0);
+            vo.setLevel(1);
+            vo.setShowCount(0);
+            vo.setFans(0);
+            vo.setFollowee(0);
+        } else {
+            vo.setIntroduce(info.getIntroduce() == null ? "" : info.getIntroduce());
+            vo.setCity(info.getCity() == null ? "" : info.getCity());
+            vo.setGender(info.getGender() == null ? 0 : info.getGender());
+            vo.setLevel(info.getLevel() == null ? 1 : info.getLevel());
+            vo.setShowCount(info.getShowCount() == null ? 0 : info.getShowCount());
+            vo.setFans(info.getFans() == null ? 0 : info.getFans());
+            vo.setFollowee(info.getFollowee() == null ? 0 : info.getFollowee());
+        }
+
+        Long posts = postMapper.selectCount(new LambdaQueryWrapper<Post>()
+                .eq(Post::getUserId, userId)
+                .eq(Post::getStatus, 0));
+        vo.setPosts(posts == null ? 0L : posts);
+
+        UserDTO me = UserHolder.getUser();
+        boolean isFollowing = me != null && me.getId() != null
+                && !me.getId().equals(userId)
+                && followService.isFollowing(me.getId(), userId);
+        vo.setIsFollowing(isFollowing);
+
+        return Result.ok(vo);
     }
 
     @Override

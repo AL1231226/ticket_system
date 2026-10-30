@@ -27,3 +27,8 @@ export function payOrder(orderId) {
 export function cancelOrder(orderId) {
   return request.put('/order/cancle', null, { params: { orderId } })
 }
+
+/** 整单退款：仅已支付且票全未核销。 */
+export function refundOrder(orderId) {
+  return request.put('/order/refund', null, { params: { orderId } })
+}

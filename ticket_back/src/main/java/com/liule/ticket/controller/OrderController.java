@@ -5,6 +5,7 @@ import com.liule.ticket.dto.Result;
 import com.liule.ticket.dto.SeckillFormDTO;
 import com.liule.ticket.service.IOrderService;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -21,9 +22,41 @@ public class OrderController {
         return orderService.finishOrder(orderId);
     }
 
+    /**
+     * 整单退款：仅限已支付且票全未核销的订单。
+     * <pre>
+     * PUT /api/order/refund?orderId=
+     * </pre>
+     */
+    @PutMapping("/refund")
+    public Result refundOrder(@RequestParam String orderId) {
+        return orderService.refundOrder(orderId);
+    }
+
+    /**
+     * 抢票入口。风控需要客户端 IP 和设备指纹：
+     * <ul>
+     *   <li>IP 优先取 X-Forwarded-For / X-Real-IP，最后才用 remoteAddr；</li>
+     *   <li>设备指纹由前端通过 {@code X-Device-Id} 传，没有就跳过设备层。</li>
+     * </ul>
+     */
     @PostMapping("/seckill")
-    public Result seckill(@RequestBody SeckillFormDTO form) {
-        return orderService.seckill(form);
+    public Result seckill(@RequestBody SeckillFormDTO form, HttpServletRequest request) {
+        return orderService.seckill(form, resolveIp(request), request.getHeader("X-Device-Id"));
+    }
+
+    private String resolveIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            // 经过多级代理时是逗号分隔的列表，第一段才是客户端
+            int comma = forwarded.indexOf(',');
+            return (comma > 0 ? forwarded.substring(0, comma) : forwarded).trim();
+        }
+        String realIp = request.getHeader("X-Real-IP");
+        if (realIp != null && !realIp.isBlank()) {
+            return realIp.trim();
+        }
+        return request.getRemoteAddr();
     }
 
     /**

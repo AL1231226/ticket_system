@@ -48,6 +48,21 @@ const routes = [
     component: () => import('@/views/seckill.vue'),
   },
   {
+    path: '/waitlist/:tierId',
+    name: 'waitlist-join',
+    component: () => import('@/views/waitlist-join.vue'),
+  },
+  {
+    path: '/waitlists',
+    name: 'waitlists',
+    component: () => import('@/views/waitlists.vue'),
+  },
+  {
+    path: '/notifications',
+    name: 'notifications',
+    component: () => import('@/views/notifications.vue'),
+  },
+  {
     path: '/queue/:orderId',
     name: 'queue',
     component: () => import('@/views/queue.vue'),

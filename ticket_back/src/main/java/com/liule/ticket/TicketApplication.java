@@ -9,7 +9,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @MapperScan("com.liule.ticket.mapper")
 @SpringBootApplication
 @EnableAspectJAutoProxy(exposeProxy = true)
-// 打开 @Scheduled：超时订单释放靠定时任务扫表
+// 打开 @Scheduled：支付超时走 ZSet 延迟队列（10s）+ 扫表对账（30s）
 @EnableScheduling
 
 public class TicketApplication {

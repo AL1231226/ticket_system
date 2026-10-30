@@ -7,12 +7,14 @@ import AppIcon from '@/components/AppIcon.vue'
 import Countdown from '@/components/Countdown.vue'
 import StateView from '@/components/StateView.vue'
 import { useCatalogStore } from '@/stores/catalog'
+import { useWaitlistStore } from '@/stores/waitlist'
 import { formatDate, formatMoney, formatSessionDate, formatWant, splitImages } from '@/utils/format'
 import { TOKEN_KEY } from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
 const catalogStore = useCatalogStore()
+const waitlistStore = useWaitlistStore()
 
 const show = ref(null)
 const sessions = ref([])
@@ -40,6 +42,9 @@ const lowestStock = computed(() => {
   const list = tiers.value.map((tier) => stockOf(tier))
   return list.length ? Math.min(...list) : 0
 })
+const allTiersSoldOut = computed(
+  () => tiers.value.length > 0 && tiers.value.every((tier) => stockOf(tier) <= 0),
+)
 const hasFutureOnSale = computed(() => {
   const session = selectedSession.value
   return (
@@ -53,14 +58,66 @@ const canBuy = computed(() => {
   if (!isOnSale(selectedSession.value)) return false
   return stockOf(selectedTier.value) > 0
 })
-const buyLabel = computed(() => {
-  if (!selectedSession.value) return '请选择场次'
-  if (!isOnSale(selectedSession.value)) {
-    return selectedSession.value.status === 0 ? '未到开票时间' : '本场暂不可抢票'
+
+/** 候补行：详情页按当前选中的票档取状态。 */
+const waitlistEntry = computed(() => waitlistStore.byTier(selectedTierId.value))
+const waitlistStatus = computed(() =>
+  waitlistEntry.value ? Number(waitlistEntry.value.waitlist?.status) : null,
+)
+
+/** 已售罄但还能候补的场次：1/2 已开票，3 已售罄。 */
+function isWaitlistSession(session) {
+  if (!session) return false
+  const status = Number(session.status)
+  if (status !== 1 && status !== 2 && status !== 3) return false
+  if (session.onSaleTime && new Date(session.onSaleTime).getTime() > Date.now()) return false
+  return !session.sessionTime || new Date(session.sessionTime).getTime() > Date.now()
+}
+
+const waitlistAction = computed(() => {
+  if (!selectedTier.value || !selectedSession.value) return null
+  if (!isWaitlistSession(selectedSession.value)) return null
+  if (stockOf(selectedTier.value) > 0) return null
+
+  const orderId = waitlistEntry.value?.waitlist?.orderId
+  if (waitlistStatus.value === 0) {
+    const pos = waitlistEntry.value?.position
+    return {
+      kind: 'waitlist-state',
+      label: pos ? `已在候补中 · 第 ${pos} 位` : '已在候补中 · 查看位置',
+      to: '/waitlists',
+    }
   }
-  if (!selectedTier.value) return '请选择票档'
-  if (stockOf(selectedTier.value) <= 0) return '已售罄'
-  return '立即抢票'
+  if (waitlistStatus.value === 1) {
+    return {
+      kind: 'waitlist-state',
+      label: '已获得补位 · 去支付',
+      to: orderId ? `/order/${orderId}` : '/waitlists',
+    }
+  }
+  if (waitlistStatus.value === 2) {
+    return {
+      kind: 'waitlist-state',
+      label: '已购票 · 查看订单',
+      to: orderId ? `/order/${orderId}` : '/waitlists',
+    }
+  }
+  return { kind: 'waitlist-join', label: '加入候补', to: '' }
+})
+
+const primaryAction = computed(() => {
+  if (canBuy.value) return { kind: 'seckill', label: '立即抢票', to: '' }
+  if (waitlistAction.value) return waitlistAction.value
+  if (!selectedSession.value) return { kind: 'disabled', label: '请选择场次', to: '' }
+  if (!isWaitlistSession(selectedSession.value)) {
+    return {
+      kind: 'disabled',
+      label: selectedSession.value.status === 0 ? '未到开票时间' : '本场暂不可抢票',
+      to: '',
+    }
+  }
+  if (!selectedTier.value) return { kind: 'disabled', label: '请选择票档', to: '' }
+  return { kind: 'disabled', label: '已售罄', to: '' }
 })
 
 const heroFallback = computed(() => {
@@ -82,6 +139,11 @@ onMounted(async () => {
     const detail = await getShowDetail(route.params.id)
     show.value = detail.show
     sessions.value = detail.sessions || []
+
+    // 已登录才需要候补状态；每次进详情都强制刷新，避免补位后状态滞后
+    if (localStorage.getItem(TOKEN_KEY)) {
+      waitlistStore.loadMine(true).catch(() => {})
+    }
 
     const preferred =
       sessions.value.find((session) => session.status === 1 || session.status === 2) ||
@@ -117,7 +179,9 @@ function stockOf(tier) {
 
 function stockText(tier) {
   const stock = stockOf(tier)
-  if (stock <= 0) return '已售罄'
+  if (stock <= 0) {
+    return isWaitlistSession(selectedSession.value) ? '已售罄 · 可候补' : '已售罄'
+  }
   if (stock <= 20) return `仅剩 ${stock} 张`
   return '余票充足'
 }
@@ -135,7 +199,8 @@ function selectSession(id) {
 }
 
 function selectTier(tier) {
-  if (!isOnSale(selectedSession.value) || stockOf(tier) <= 0) return
+  // 售罄票档也要能选中：选中后底部会出现「加入候补」
+  if (!isWaitlistSession(selectedSession.value)) return
   selectedTierId.value = tier.id
 }
 
@@ -189,6 +254,30 @@ function goBuy() {
     return
   }
   router.push(target)
+}
+
+function openWaitlist() {
+  if (!selectedTier.value || !selectedSession.value) return
+  const target = `/waitlist/${selectedTier.value.id}?showId=${show.value.id}&sessionId=${selectedSession.value.id}`
+  if (!localStorage.getItem(TOKEN_KEY)) {
+    router.push({ name: 'login', query: { redirect: target } })
+    return
+  }
+  router.push(target)
+}
+
+function onPrimaryAction() {
+  const action = primaryAction.value
+  if (!action || action.kind === 'disabled') return
+  if (action.kind === 'seckill') {
+    goBuy()
+    return
+  }
+  if (action.kind === 'waitlist-join') {
+    openWaitlist()
+    return
+  }
+  if (action.to) router.push(action.to)
 }
 
 function goBack() {
@@ -275,7 +364,17 @@ function onGalleryError(event) {
 
         <section v-if="selectedSession" class="detail__status">
           <template v-if="!isOnSale(selectedSession)">
-            <div class="status-card">
+            <div v-if="isWaitlistSession(selectedSession)" class="status-card status-card--waitlist">
+              <div>
+                <span class="status-card__label">本场已售罄</span>
+                <p class="status-card__note">
+                  候补通道开放：有人退票时按排队顺序补位，补位后 10 分钟内支付。
+                </p>
+              </div>
+              <span class="status-card__waitlist">候补中</span>
+            </div>
+
+            <div v-else class="status-card">
               <div class="status-card__main">
                 <span class="status-card__label">
                   {{ selectedSession.status === 0 ? '距离开票' : '本场次当前不可抢票' }}
@@ -300,7 +399,13 @@ function onGalleryError(event) {
             <div>
               <span class="status-card__label">本场正在抢票</span>
               <p class="status-card__note">
-                当前最低余票 {{ lowestStock }} 张 · 每账号本场限购 {{ selectedSession.purchaseLimit }} 张
+                <template v-if="allTiersSoldOut">本场票档已售罄，可选择票档加入候补。</template>
+                <template v-else-if="lowestStock <= 0">
+                  部分票档已售罄，可选择其他票档或加入候补。
+                </template>
+                <template v-else>
+                  当前最低余票 {{ lowestStock }} 张 · 每账号本场限购 {{ selectedSession.purchaseLimit }} 张
+                </template>
               </p>
             </div>
             <span class="status-card__live">
@@ -325,8 +430,9 @@ function onGalleryError(event) {
             :class="{
               'is-active': selectedTierId === tier.id,
               'is-sold-out': stockOf(tier) <= 0,
+              'is-waitlist-able': stockOf(tier) <= 0 && isWaitlistSession(selectedSession),
             }"
-            :disabled="stockOf(tier) <= 0 || !isOnSale(selectedSession)"
+            :disabled="!isWaitlistSession(selectedSession)"
             @click="selectTier(tier)"
           >
             <div class="tier-row__info">
@@ -385,11 +491,15 @@ function onGalleryError(event) {
         </div>
         <button
           class="detail__buy"
+          :class="{
+            'is-waitlist':
+              primaryAction.kind === 'waitlist-join' || primaryAction.kind === 'waitlist-state',
+          }"
           type="button"
-          :disabled="!canBuy"
-          @click="goBuy"
+          :disabled="primaryAction.kind === 'disabled'"
+          @click="onPrimaryAction"
         >
-          {{ buyLabel }}
+          {{ primaryAction.label }}
         </button>
       </div>
     </template>
@@ -627,6 +737,21 @@ function onGalleryError(event) {
   background: rgba(46, 213, 115, 0.06);
 }
 
+.status-card--waitlist {
+  border-color: rgba(123, 97, 255, 0.28);
+  background: var(--brand-alt-soft);
+}
+
+.status-card__waitlist {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(123, 97, 255, 0.18);
+  color: #c8bcff;
+  font-size: 9px;
+  font-weight: 700;
+}
+
 .status-card__live {
   display: inline-flex;
   align-items: center;
@@ -674,8 +799,16 @@ function onGalleryError(event) {
   }
 
   &.is-sold-out {
-    opacity: 0.42;
-    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  &.is-waitlist-able {
+    opacity: 0.9;
+    cursor: pointer;
+
+    .tier-row__right span {
+      color: #b7a8ff;
+    }
   }
 }
 
@@ -851,6 +984,11 @@ function onGalleryError(event) {
     box-shadow: none;
     color: var(--text-3);
     cursor: not-allowed;
+  }
+
+  &.is-waitlist:not(:disabled) {
+    background: linear-gradient(96deg, #7b61ff, #a78bfa);
+    box-shadow: 0 8px 22px rgba(123, 97, 255, 0.3);
   }
 
   &:active:not(:disabled) {

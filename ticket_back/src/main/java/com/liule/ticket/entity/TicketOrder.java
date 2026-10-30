@@ -85,4 +85,9 @@ public class TicketOrder implements Serializable {
 
     private LocalDateTime cancelTime;
 
+    /**
+     * 退款时间（Plan 3 退票接口写入）
+     */
+    private LocalDateTime refundTime;
+
 }

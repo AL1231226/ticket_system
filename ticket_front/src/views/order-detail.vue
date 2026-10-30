@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getAttendees } from '@/api/attendee'
-import { bindAttendees, cancelOrder, getOrder, payOrder } from '@/api/order'
+import { bindAttendees, cancelOrder, getOrder, payOrder, refundOrder } from '@/api/order'
 import AppBar from '@/components/AppBar.vue'
 import AppIcon from '@/components/AppIcon.vue'
 import AttendeeForm from '@/components/AttendeeForm.vue'
@@ -25,7 +25,9 @@ const selectedIds = ref([])
 const showAttendeeForm = ref(false)
 const paying = ref(false)
 const canceling = ref(false)
+const refunding = ref(false)
 const showCancelDialog = ref(false)
+const showRefundDialog = ref(false)
 const actionError = ref('')
 const posterFailed = ref(false)
 const copied = ref(false)
@@ -146,6 +148,27 @@ async function doCancel() {
   }
 }
 
+function askRefund() {
+  actionError.value = ''
+  showRefundDialog.value = true
+}
+
+async function doRefund() {
+  if (refunding.value) return
+  refunding.value = true
+  actionError.value = ''
+  try {
+    await refundOrder(orderId.value)
+    showRefundDialog.value = false
+    await reloadOrder()
+  } catch (e) {
+    actionError.value = e.message
+    showRefundDialog.value = false
+  } finally {
+    refunding.value = false
+  }
+}
+
 function goWallet() {
   router.push('/wallet')
 }
@@ -234,7 +257,11 @@ function closedDescription(value) {
         </div>
 
         <button class="success__primary" type="button" @click="goWallet">查看电子票</button>
+        <button class="success__ghost success__refund" type="button" @click="askRefund">
+          申请退款
+        </button>
         <button class="success__ghost" type="button" @click="goHome">继续逛演出</button>
+        <p v-if="actionError" class="inline-error">{{ actionError }}</p>
       </main>
 
       <main v-else-if="status !== 0" class="closed">
@@ -363,6 +390,19 @@ function closedDescription(value) {
             <button type="button" class="ghost" @click="showCancelDialog = false">再想想</button>
             <button type="button" class="danger" :disabled="canceling" @click="doCancel">
               {{ canceling ? '取消中…' : '取消订单' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showRefundDialog" class="confirm-mask" @click.self="showRefundDialog = false">
+        <div class="confirm-card">
+          <h3>申请退款？</h3>
+          <p>整单退款后电子票立即失效，订单不可恢复。任意一张票已核验时无法退款。</p>
+          <div class="confirm-card__actions">
+            <button type="button" class="ghost" @click="showRefundDialog = false">再想想</button>
+            <button type="button" class="danger" :disabled="refunding" @click="doRefund">
+              {{ refunding ? '退款中…' : '确认退款' }}
             </button>
           </div>
         </div>
@@ -746,6 +786,11 @@ function closedDescription(value) {
   border: 1px solid var(--line);
   background: transparent;
   color: var(--text-2);
+}
+
+.success__refund {
+  border-color: rgba(255, 71, 87, 0.25);
+  color: #ff8d96;
 }
 
 .confirm-mask {

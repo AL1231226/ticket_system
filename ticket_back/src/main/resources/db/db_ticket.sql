@@ -2,10 +2,11 @@
 -- 演出票务平台 · 建库建表 + 种子数据
 -- 库名 db_ticket ｜ 字符集 utf8mb4 ｜ 引擎 InnoDB
 --
--- 范围：目前 13 张表
+-- 范围：目前 19 张表
 --       Plan 1：用户 / 用户详情 / 场馆 / 分类 / 演出 / 想看 / 场次 / 票档
 --       Plan 2：订单 / 票 / 限购兜底 / 观演人库 / 订单观演人
---       候补、社区、站内信的表留到对应 Plan 再建
+--       Plan 3：候补队列 / 站内信
+--       Plan 4 社区：动态 / 评论 / 关注 / 点赞
 --
 -- ⚠ 这个脚本是【可重复执行】的，每张表都先 DROP。开发环境随便跑，
 --   但它会清空表里已有的数据，包括手工注册的测试账号。
@@ -205,6 +206,7 @@ CREATE TABLE tb_ticket_order (
   expire_time DATETIME  NOT NULL COMMENT '支付截止时间（创建 + 15min）',
   pay_time    DATETIME  NULL,
   cancel_time DATETIME  NULL,
+  refund_time DATETIME  NULL COMMENT '退款时间；Plan 3 退票接口写入',
   PRIMARY KEY (id),
   KEY idx_user (user_id),
   KEY idx_session (session_id),
@@ -305,6 +307,53 @@ CREATE TABLE tb_order_attendee (
   KEY idx_idcard (id_card)                           COMMENT '按证件反查'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单观演人（一证一票的唯一约束在这里）';
 
+-- ------------------------------------------------------------
+-- 14. 候补队列（Plan 3）
+--     ZSet 负责排队顺序，这张表负责业务状态和补位订单关联。
+--     ★ uk_user_tier：同一用户同一票档只能排一次；过期后重新加入要
+--       更新原行（status→0、join_time 重置），不能直接 insert。
+--     ★ status=1 时 order_id 指向补位生成的 source=1 订单。
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS tb_waitlist;
+CREATE TABLE tb_waitlist (
+  id          BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED  NOT NULL COMMENT '候补用户',
+  tier_id     BIGINT UNSIGNED  NOT NULL COMMENT '候补的票档',
+  session_id  BIGINT UNSIGNED  NOT NULL,
+  quantity    TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '想候补几张',
+  status      TINYINT UNSIGNED NOT NULL DEFAULT 0
+              COMMENT '0排队中 1已通知待支付 2已购票 3已过期 4已取消',
+  order_id    BIGINT UNSIGNED  NOT NULL DEFAULT 0 COMMENT '补位生成的订单号；0=尚未补位',
+  notify_time DATETIME         NULL COMMENT '被通知补位的时间',
+  expire_time DATETIME         NULL COMMENT '补位支付截止时间',
+  join_time   TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '入队时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_user_tier   (user_id, tier_id)   COMMENT '同票档只能排一次',
+  KEY        idx_tier_status (tier_id, status)   COMMENT '取队首/查同票档候补',
+  KEY        idx_user_status (user_id, status)   COMMENT '我的候补列表',
+  KEY        idx_order       (order_id)          COMMENT '按补位订单反查'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='候补队列表';
+
+-- ------------------------------------------------------------
+-- 15. 站内信（Plan 3）
+--     候补补位成功时写一条；前端轮询未读数拿红点。
+--     不做 WebSocket，避免连接管理复杂度。
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS tb_notification;
+CREATE TABLE tb_notification (
+  id          BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED  NOT NULL COMMENT '接收者',
+  type        TINYINT UNSIGNED NOT NULL DEFAULT 0
+              COMMENT '0系统 1候补补位成功 2开票提醒 3订单状态变更',
+  title       VARCHAR(128)     NOT NULL DEFAULT '',
+  content     VARCHAR(512)     NOT NULL DEFAULT '',
+  biz_id      BIGINT UNSIGNED  NOT NULL DEFAULT 0 COMMENT '关联业务ID（如候补ID/订单ID）',
+  is_read     TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0未读 1已读',
+  create_time TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_user_read (user_id, is_read) COMMENT '未读数/我的消息'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站内信表';
+
 -- ============================================================
 -- 种子数据
 -- 量按 Plan 1 的范围来（够演出浏览演示即可）。
@@ -367,7 +416,12 @@ INSERT INTO tb_show (id, name, artist, venue_id, city, category_id, poster, imag
  'https://picsum.photos/seed/show8/800/1100',
  'https://picsum.photos/seed/show8a/1200/800',
  '2027-02-14', '2027-02-14', 2260, 1,
- '情人节特别场。六组民谣音乐人，一把木吉他，一个不插电的夜晚。');
+ '情人节特别场。六组民谣音乐人，一把木吉他，一个不插电的夜晚。'),
+(9, '候补测试专场（余票 3 张）', '测试艺人', 1, '上海', 1,
+ 'https://picsum.photos/seed/waitlist-test/800/1100',
+ 'https://picsum.photos/seed/waitlist-testa/1200/800',
+ '2026-12-19', '2026-12-19', 3, 1,
+ '用于验证候补流程的测试演出。场次已开票，票档仅剩 3 张；买完 3 张后票档售罄，详情页会出现加入候补，可继续测试补位、超时和回流。');
 
 -- 场次（演出 1：星野乐队，三场）
 -- 场次 1、2 已开票（status=2），用于抢票/支付/票夹演示；
@@ -405,6 +459,172 @@ INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_ty
 (4, 4, 'VIP 通票',   880.00, '前排区',   1, 1000, 1000, 2, 1),
 (5, 4, '单日预售票', 380.00, '全场站席', 1, 8000, 8000, 4, 1),
 (5, 4, 'VIP 通票',   880.00, '前排区',   1, 1000, 1000, 2, 1);
+
+-- 演出 9：候补流程手工验收专用
+-- 场次 6 已开票（status=2）；票档只有 3 张，买完即售罄，便于手工验证候补。
+INSERT INTO tb_show_session (id, show_id, session_name, session_time, on_sale_time, purchase_limit, status) VALUES
+(6, 9, '周六 19:30', '2026-12-19 19:30:00', '2026-10-01 12:00:00', 6, 2);
+
+INSERT INTO tb_ticket_tier (session_id, show_id, name, price, seat_area, seat_type, total_stock, stock, max_per_order, status) VALUES
+(6, 9, '候补测试票', 199.00, '测试区', 0, 3, 3, 3, 1);
+
+-- ============================================================
+-- Plan 4 · 社区：表结构 + 演示种子
+-- 活库迁移：
+--   sed -n '/plan4-community:start/,/plan4-community:end/p' db_ticket.sql | mysql ...
+-- 注意：本块含 DROP TABLE，只能执行一次。
+-- ============================================================
+-- >>> plan4-community:start
+
+DROP TABLE IF EXISTS tb_post;
+CREATE TABLE tb_post (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     BIGINT UNSIGNED NOT NULL COMMENT '发布者',
+  show_id     BIGINT UNSIGNED NULL COMMENT '关联演出，可空',
+  session_id  BIGINT UNSIGNED NULL COMMENT '关联场次，可空',
+  title       VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '标题，可空',
+  content     TEXT            NULL COMMENT '正文',
+  images      VARCHAR(2048)   NOT NULL DEFAULT '' COMMENT '图片URL，逗号分隔，最多9张',
+  liked       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT '点赞数冗余',
+  comments    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT '评论数冗余',
+  status      TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0正常 1下架',
+  create_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_user_time (user_id, create_time),
+  KEY idx_show_time (show_id, create_time),
+  KEY idx_status_time (status, create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='观演动态表';
+
+DROP TABLE IF EXISTS tb_post_comment;
+CREATE TABLE tb_post_comment (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  post_id     BIGINT UNSIGNED NOT NULL,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  parent_id   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '父评论ID，0为一级评论',
+  answer_id   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '回复目标评论ID，v1恒为0',
+  content     VARCHAR(512)    NOT NULL,
+  liked       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'v1不接评论点赞',
+  status      TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0正常 1折叠（软删除）',
+  create_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_post_time (post_id, create_time),
+  KEY idx_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='动态评论表';
+
+DROP TABLE IF EXISTS tb_follow;
+CREATE TABLE tb_follow (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id        BIGINT UNSIGNED NOT NULL COMMENT '关注者',
+  follow_user_id BIGINT UNSIGNED NOT NULL COMMENT '被关注者',
+  create_time    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_user_follow (user_id, follow_user_id),
+  KEY idx_follow_user (follow_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='关注表';
+
+DROP TABLE IF EXISTS tb_post_like;
+CREATE TABLE tb_post_like (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  post_id     BIGINT UNSIGNED NOT NULL,
+  user_id     BIGINT UNSIGNED NOT NULL,
+  create_time TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_post_user (post_id, user_id),
+  KEY idx_user_time (user_id, create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='动态点赞表';
+
+-- 演示用户：固定 ID 10001–10005，手机号 13800000001–13800000005。
+-- 注意：tb_user.id 是 AUTO_INCREMENT，插入后下一个注册用户会从 10006 开始，这是预期行为。
+INSERT INTO tb_user (id, phone, password, nickname, icon) VALUES
+(10001, '13800000001', '', '夜航员',       'https://picsum.photos/seed/avatar1/200/200'),
+(10002, '13800000002', '', '南方观众',     'https://picsum.photos/seed/avatar2/200/200'),
+(10003, '13800000003', '', '剧场常客',     'https://picsum.photos/seed/avatar3/200/200'),
+(10004, '13800000004', '', '音乐节难民',   'https://picsum.photos/seed/avatar4/200/200'),
+(10005, '13800000005', '', '新乐迷',       'https://picsum.photos/seed/avatar5/200/200');
+
+INSERT INTO tb_user_info
+  (user_id, city, introduce, gender, credits, level, fans, followee, show_count)
+VALUES
+(10001, '上海', '看现场的人，记录每一次灯亮。',       1, 300, 3, 4, 3, 12),
+(10002, '广州', '南方音乐节常驻，民谣和摇滚都听。',   2, 120, 2, 2, 2,  5),
+(10003, '北京', '话剧和脱口秀观众，散场后写 repo。',   1,  80, 2, 2, 2,  7),
+(10004, '成都', '音乐节两天全勤，鞋已经废了三双。',   1, 260, 3, 4, 1, 15),
+(10005, '上海', '刚入坑，正在补现场。',               2,   0, 1, 0, 4,  0);
+
+INSERT INTO tb_post
+  (id, user_id, show_id, session_id, title, content, images, liked, comments, status, create_time) VALUES
+(1, 10001, 1, 1, '夜航首场，灯亮那一刻值回票价',
+ '星野乐队的状态比录音室还好。环形舞台一开，全场站起来那一下真的起鸡皮疙瘩。安可唱了《灯塔》，散场后耳朵还在嗡。',
+ 'https://picsum.photos/seed/repo1a/900/700,https://picsum.photos/seed/repo1b/900/700',
+ 2, 2, 0, '2026-10-24 22:10:00'),
+(2, 10002, 4, NULL, '草莓 Day1 穿搭和避坑',
+ '下午两点进场最晒，帽子和防晒一定要带。前排站区水卖得很快，建议自己带空杯。晚上气温掉得厉害，薄外套别存包。',
+ 'https://picsum.photos/seed/repo2a/900/700',
+ 1, 1, 0, '2026-10-24 18:20:00'),
+(3, 10003, 5, NULL, '《暗涌》repo：三个人的老宅',
+ '舞台只有一张桌子和三把椅子，但三兄妹的每一句台词都在往老宅的墙里钉钉子。结尾灯暗下来的时候，后排有人在哭。',
+ '', 0, 0, 0, '2026-10-23 23:05:00'),
+(4, 10004, 4, NULL, '音乐节第二天，鞋废了',
+ '从入口走到主舞台要二十分钟，草坪全是泥。建议穿旧鞋，别穿白鞋。但落日那一刻，一切都值。',
+ 'https://picsum.photos/seed/repo4a/900/700,https://picsum.photos/seed/repo4b/900/700',
+ 1, 1, 0, '2026-10-23 14:40:00'),
+(5, 10001, 7, NULL, '印象派真迹，值得请半天假',
+ '工作日下午人少很多。莫奈那几幅的笔触近看完全是另一种东西，建议租讲解器。出口的周边比想象中克制。',
+ 'https://picsum.photos/seed/repo5a/900/700',
+ 1, 1, 0, '2026-10-22 16:30:00'),
+(6, 10005, 6, NULL, '今晚不加班，笑到拍桌子',
+ '打工人专场，每个段子都在工位上发生过。建议坐中间偏后，互动不会太频繁，但笑点一个不落。',
+ '', 0, 1, 0, '2026-10-22 00:15:00'),
+(7, 10002, 1, 2, '星野乐队歌单预测',
+ '按前几站的路透，开场应该是新专辑第一首，中段会有一首不插电。《长夜》大概率在安可，想听《灯塔》的可以期待一下。',
+ '', 1, 1, 0, '2026-10-21 21:00:00'),
+(8, 10003, 5, NULL, '话剧散场后的夜宵地图',
+ '剧场后门那条街有四家开到凌晨的店。散场别急着打车，走十分钟比排队快。',
+ '', 0, 0, 0, '2026-10-21 12:10:00'),
+(9, 10004, 7, NULL, '展览拍照机位分享',
+ '入口右手边那面灰墙光最好，下午三点人最少。展厅里不能用闪光灯，手机记得关。',
+ 'https://picsum.photos/seed/repo9a/900/700,https://picsum.photos/seed/repo9b/900/700',
+ 1, 1, 0, '2026-10-20 19:45:00'),
+(10, 10005, 1, NULL, '第一次看演唱会，求建议',
+ '买了看台 B，想问一下需要提前多久到？散场地铁还开吗？',
+ '', 0, 0, 0, '2026-10-20 09:30:00');
+
+INSERT INTO tb_post_comment (id, post_id, user_id, content, status, create_time) VALUES
+(1, 1, 10002, '同场！安可那段直接泪目', 0, '2026-10-24 22:30:00'),
+(2, 1, 10005, '想问下看台 B 视角怎么样？', 0, '2026-10-24 22:45:00'),
+(3, 2, 10001, '求穿搭链接', 0, '2026-10-24 19:00:00'),
+(4, 4, 10005, '鞋：我承受了太多', 0, '2026-10-23 15:00:00'),
+(5, 5, 10003, '工作日人少吗？', 0, '2026-10-22 17:00:00'),
+(6, 6, 10002, '这个专场真的值', 0, '2026-10-22 01:00:00'),
+(7, 7, 10004, '希望有《灯塔》', 0, '2026-10-21 21:30:00'),
+(8, 9, 10005, '机位收藏了', 0, '2026-10-20 20:00:00');
+
+INSERT INTO tb_post_like (id, post_id, user_id, create_time) VALUES
+(1, 1, 10002, '2026-10-24 22:20:00'),
+(2, 1, 10003, '2026-10-24 22:25:00'),
+(3, 2, 10001, '2026-10-24 18:40:00'),
+(4, 4, 10005, '2026-10-23 15:10:00'),
+(5, 5, 10002, '2026-10-22 17:10:00'),
+(6, 7, 10004, '2026-10-21 21:40:00'),
+(7, 9, 10003, '2026-10-20 20:10:00');
+
+INSERT INTO tb_follow (id, user_id, follow_user_id, create_time) VALUES
+(1,  10001, 10002, '2026-10-18 10:00:00'),
+(2,  10001, 10003, '2026-10-18 10:01:00'),
+(3,  10001, 10004, '2026-10-18 10:02:00'),
+(4,  10002, 10001, '2026-10-18 10:10:00'),
+(5,  10002, 10004, '2026-10-18 10:11:00'),
+(6,  10003, 10001, '2026-10-18 10:20:00'),
+(7,  10003, 10004, '2026-10-18 10:21:00'),
+(8,  10004, 10001, '2026-10-18 10:30:00'),
+(9,  10005, 10001, '2026-10-19 09:00:00'),
+(10, 10005, 10002, '2026-10-19 09:01:00'),
+(11, 10005, 10003, '2026-10-19 09:02:00'),
+(12, 10005, 10004, '2026-10-19 09:03:00');
+
+-- <<< plan4-community:end
 
 -- ============================================================
 -- 引用完整性校验
@@ -508,3 +728,67 @@ SELECT '不一致: ticket 与所属订单的 tier_id' AS chk,
        k.id, k.tier_id, o.tier_id AS order_tier_id
 FROM tb_ticket k JOIN tb_ticket_order o ON o.id = k.order_id
 WHERE k.tier_id <> o.tier_id;
+
+-- ============================================================
+-- Plan 4 · 社区完整性校验
+-- ============================================================
+
+-- 动态引用了不存在的用户 / 演出
+SELECT '孤儿: tb_post.user_id' AS chk, p.id, p.user_id
+FROM tb_post p LEFT JOIN tb_user u ON u.id = p.user_id
+WHERE u.id IS NULL;
+
+SELECT '孤儿: tb_post.show_id' AS chk, p.id, p.show_id
+FROM tb_post p LEFT JOIN tb_show s ON s.id = p.show_id
+WHERE p.show_id IS NOT NULL AND s.id IS NULL;
+
+-- 评论 / 关注 / 点赞引用了不存在的行
+SELECT '孤儿: tb_post_comment.post_id' AS chk, c.id, c.post_id
+FROM tb_post_comment c LEFT JOIN tb_post p ON p.id = c.post_id
+WHERE p.id IS NULL;
+
+SELECT '孤儿: tb_post_comment.user_id' AS chk, c.id, c.user_id
+FROM tb_post_comment c LEFT JOIN tb_user u ON u.id = c.user_id
+WHERE u.id IS NULL;
+
+SELECT '孤儿: tb_follow.user_id' AS chk, f.id, f.user_id
+FROM tb_follow f LEFT JOIN tb_user u ON u.id = f.user_id
+WHERE u.id IS NULL;
+
+SELECT '孤儿: tb_follow.follow_user_id' AS chk, f.id, f.follow_user_id
+FROM tb_follow f LEFT JOIN tb_user u ON u.id = f.follow_user_id
+WHERE u.id IS NULL;
+
+SELECT '孤儿: tb_post_like.post_id' AS chk, l.id, l.post_id
+FROM tb_post_like l LEFT JOIN tb_post p ON p.id = l.post_id
+WHERE p.id IS NULL;
+
+SELECT '孤儿: tb_post_like.user_id' AS chk, l.id, l.user_id
+FROM tb_post_like l LEFT JOIN tb_user u ON u.id = l.user_id
+WHERE u.id IS NULL;
+
+-- 冗余计数必须与明细一致
+SELECT '不一致: tb_post.liked 与点赞明细' AS chk, p.id, p.liked, COUNT(l.id) AS real_liked
+FROM tb_post p LEFT JOIN tb_post_like l ON l.post_id = p.id
+GROUP BY p.id, p.liked
+HAVING p.liked <> real_liked;
+
+SELECT '不一致: tb_post.comments 与评论明细' AS chk, p.id, p.comments, COUNT(c.id) AS real_comments
+FROM tb_post p LEFT JOIN tb_post_comment c ON c.post_id = p.id AND c.status = 0
+GROUP BY p.id, p.comments
+HAVING p.comments <> real_comments;
+
+SELECT '不一致: tb_user_info.fans 与关注明细' AS chk, i.user_id, i.fans, COUNT(f.id) AS real_fans
+FROM tb_user_info i LEFT JOIN tb_follow f ON f.follow_user_id = i.user_id
+WHERE i.user_id BETWEEN 10001 AND 10005
+GROUP BY i.user_id, i.fans
+HAVING i.fans <> real_fans;
+
+SELECT '不一致: tb_user_info.followee 与关注明细' AS chk, i.user_id, i.followee, COUNT(f.id) AS real_followee
+FROM tb_user_info i LEFT JOIN tb_follow f ON f.user_id = i.user_id
+WHERE i.user_id BETWEEN 10001 AND 10005
+GROUP BY i.user_id, i.followee
+HAVING i.followee <> real_followee;
+
+SELECT '异常: 自己关注自己' AS chk, id, user_id
+FROM tb_follow WHERE user_id = follow_user_id;

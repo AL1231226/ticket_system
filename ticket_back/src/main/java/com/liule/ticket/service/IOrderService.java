@@ -5,6 +5,7 @@ import com.liule.ticket.dto.Result;
 import com.liule.ticket.dto.SeckillFormDTO;
 import com.liule.ticket.entity.TicketOrder;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface IOrderService extends IService<TicketOrder> {
@@ -12,6 +13,17 @@ public interface IOrderService extends IService<TicketOrder> {
     Result cancleOrder(String orderId);
 
     Result finishOrder(String orderId);
+
+    /**
+     * 整单退款：仅限本人的【已支付】订单，且订单下所有票都未核销。
+     * <p>
+     * 退款成功：订单 → 3 已退款并写 {@code refund_time}，票 → 2 已退；
+     * 库存走 {@link IReflowService#release} 统一回补（E11-6 起候补优先），
+     * 同时归还限购额度、删除订单观演人行释放证件。
+     * <p>
+     * 任意一张票已核销就整单拒绝 —— 本期不做部分退款（Plan 3 拍板 #9）。
+     */
+    Result refundOrder(String orderId);
 
     /**
      * 订单确认：给订单绑定观演人（一票一人）。
@@ -31,13 +43,21 @@ public interface IOrderService extends IService<TicketOrder> {
      * 用户主动取消和定时任务扫出来的超时单走完全相同的回补逻辑。
      * <p>
      * 释放四处：DB 的 stock/lock_stock、Redis 库存、Redis 限购计数、DB 限购兜底表。
+     * 其中库存（DB + Redis）统一走 {@link IReflowService#release}，为 Plan 3 候补回流留出入口。
      *
      * @param targetStatus 2=已取消，4=已失效
      * @return true=本次确实作废了；false=订单不存在或已不是待支付（别人处理过）
      */
     boolean invalidateOrder(Long orderId, int targetStatus);
 
-    Result seckill(SeckillFormDTO form);
+    /**
+     * 抢票。入口先做风控（用户/IP 频率、设备多账号），再走业务校验和 Lua。
+     *
+     * @param form     票档与数量
+     * @param ip       客户端 IP，为空时跳过 IP 限流
+     * @param deviceId 设备指纹（X-Device-Id），为空时跳过设备记录
+     */
+    Result seckill(SeckillFormDTO form, String ip, String deviceId);
 
     /**
      * 把秒杀消息落库。由消费线程调用，不在请求线程里跑。
@@ -51,7 +71,27 @@ public interface IOrderService extends IService<TicketOrder> {
     void createOrder(Long orderId, Long userId, Long tierId, Long sessionId, Integer quantity);
 
     /**
+     * 候补补位建单：由 {@link IReflowService#release} 在回流分配锁内调用，
+     * 和 release 共用同一个事务。
+     * <p>
+     * 与秒杀建单共用内部实现（扣 DB 库存、累计限购、插订单、进延迟队列）。
+     * 区别：
+     * <ul>
+     *   <li>{@code source=1 候补补位}，支付窗口 10 分钟；</li>
+     *   <li>秒杀的 Redis 限购计数由 Lua 原子加，候补没有 Lua，
+     *       由本方法在事务提交后补加。</li>
+     * </ul>
+     *
+     * @param expireTime 补位支付截止时间（now + 10min）
+     */
+    void createWaitlistOrder(Long orderId, Long userId, Long tierId, Long sessionId,
+                             Integer quantity, LocalDateTime expireTime);
+
+    /**
      * 落库失败时，把秒杀阶段占用的 Redis 资源还回去。
+     * <p>
+     * 只用于补偿：此时 DB 事务已回滚，DB 库存没有扣成功，只能还 Redis，
+     * 不能走 {@link IReflowService#release}（那会把 DB 库存也加回去）。
      * <p>
      * 不还就是漏票：Lua 已经扣了库存、加了限购计数，消息一丢，这张票就从
      * 可售池里消失 —— 用户没订单、DB 里库存还在，两边永久分叉。

@@ -5,6 +5,7 @@ import com.liule.ticket.exception.BizException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @Slf4j
 @RestControllerAdvice
@@ -23,6 +24,15 @@ public class WebExceptionAdvice {
     public Result handleBizException(BizException e) {
         log.warn("业务异常：{}", e.getMessage());
         return Result.fail(e.getMessage());
+    }
+
+    /**
+     * Spring 的 multipart 限制会在进入 Controller 出之前抛，这里转成业务提示。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public Result handleMaxUploadSize(MaxUploadSizeExceededException e) {
+        log.warn("上传文件超过限制：{}", e.getMessage());
+        return Result.fail("图片不能超过 5MB");
     }
 
     @ExceptionHandler(RuntimeException.class)
