@@ -31,6 +31,11 @@ export function getUserInfo(userId) {
   return request.get(`/user/info/${userId}`)
 }
 
+/** 公开主页：昵称/头像/简介 + 粉丝/关注/动态数 + isFollowing。 */
+export function getUserProfile(userId) {
+  return request.get(`/user/profile/${userId}`)
+}
+
 export function sign() {
   return request.post('/user/sign')
 }

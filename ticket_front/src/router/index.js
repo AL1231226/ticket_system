@@ -25,6 +25,13 @@ const routes = [
         meta: { public: true },
       },
       {
+        path: 'community',
+        name: 'community',
+        component: () => import('@/views/community.vue'),
+        // 社区浏览公开；点赞/评论/关注在页面内按登录态处理
+        meta: { public: true },
+      },
+      {
         path: 'wallet',
         name: 'wallet',
         component: () => import('@/views/wallet.vue'),
@@ -35,6 +42,32 @@ const routes = [
         component: () => import('@/views/mine.vue'),
       },
     ],
+  },
+  {
+    path: '/post/new',
+    name: 'post-new',
+    component: () => import('@/views/post-new.vue'),
+  },
+  {
+    path: '/post/:id',
+    name: 'post-detail',
+    component: () => import('@/views/post-detail.vue'),
+    // 社区动态详情公开可读，点赞/评论/关注在页面内按登录态处理
+    meta: { public: true },
+  },
+  {
+    path: '/user/:id/follows',
+    name: 'user-follows',
+    component: () => import('@/views/user-follows.vue'),
+    // 关注/粉丝列表公开可读
+    meta: { public: true },
+  },
+  {
+    path: '/user/:id',
+    name: 'user-profile',
+    component: () => import('@/views/user-profile.vue'),
+    // 个人主页公开可读；关注按钮按登录态处理
+    meta: { public: true },
   },
   {
     path: '/show/:id',

@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { getShowPosts } from '@/api/community'
 import { getShowDetail, getTierStock } from '@/api/show'
 import AppIcon from '@/components/AppIcon.vue'
 import Countdown from '@/components/Countdown.vue'
+import PostCard from '@/components/PostCard.vue'
 import StateView from '@/components/StateView.vue'
 import { useCatalogStore } from '@/stores/catalog'
 import { useWaitlistStore } from '@/stores/waitlist'
@@ -25,6 +27,10 @@ const loading = ref(true)
 const error = ref('')
 const heroFailed = ref(false)
 const descExpanded = ref(false)
+const repoPosts = ref([])
+const repoLoading = ref(false)
+const repoError = ref('')
+const repoLoaded = ref(false)
 
 let stockTimer = null
 let stockSeq = 0
@@ -139,6 +145,7 @@ onMounted(async () => {
     const detail = await getShowDetail(route.params.id)
     show.value = detail.show
     sessions.value = detail.sessions || []
+    loadRepo(detail.show.id)
 
     // 已登录才需要候补状态；每次进详情都强制刷新，避免补位后状态滞后
     if (localStorage.getItem(TOKEN_KEY)) {
@@ -286,6 +293,38 @@ function goBack() {
   } else {
     router.push('/home')
   }
+}
+
+async function loadRepo(showId) {
+  repoLoading.value = true
+  repoError.value = ''
+  try {
+    const res = await getShowPosts(showId, { count: 3 })
+    repoPosts.value = Array.isArray(res?.posts) ? res.posts : []
+    repoLoaded.value = true
+  } catch (e) {
+    repoError.value = e.message
+    repoLoaded.value = true
+  } finally {
+    repoLoading.value = false
+  }
+}
+
+function openPost(id) {
+  router.push(`/post/${id}`)
+}
+
+function writeRepo() {
+  const params = new URLSearchParams({ showId: show.value.id })
+  if (selectedSessionId.value) {
+    params.set('sessionId', selectedSessionId.value)
+  }
+  const target = `/post/new?${params.toString()}`
+  if (!localStorage.getItem(TOKEN_KEY)) {
+    router.push({ name: 'login', query: { redirect: target } })
+    return
+  }
+  router.push(target)
 }
 
 function onGalleryError(event) {
@@ -465,6 +504,35 @@ function onGalleryError(event) {
           >
             {{ descExpanded ? '收起' : '展开全部' }}
           </button>
+        </section>
+
+        <section class="detail__repo">
+          <div class="detail__section-head">
+            <h2>观演 repo</h2>
+            <button class="detail__repo-write" type="button" @click="writeRepo">
+              <AppIcon name="plus" :size="12" />
+              写 repo
+            </button>
+          </div>
+
+          <p v-if="repoLoading" class="detail__repo-note">正在加载观演 repo…</p>
+
+          <p v-else-if="repoError" class="detail__repo-note">
+            {{ repoError }}
+            <button type="button" @click="loadRepo(show.id)">重试</button>
+          </p>
+
+          <template v-else>
+            <PostCard
+              v-for="post in repoPosts"
+              :key="post.id"
+              :post="post"
+              @open="openPost(post.id)"
+            />
+            <p v-if="repoLoaded && !repoPosts.length" class="detail__repo-empty">
+              还没有观演 repo，来写第一条。
+            </p>
+          </template>
         </section>
 
         <section v-if="gallery.length" class="detail__gallery">
@@ -912,6 +980,59 @@ function onGalleryError(event) {
   color: var(--brand);
   font-size: 10px;
   cursor: pointer;
+}
+
+.detail__repo-write {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 61, 113, 0.34);
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:active {
+    opacity: 0.7;
+  }
+}
+
+.detail__repo-note {
+  margin: 0;
+  padding: 14px 0;
+  color: var(--text-3);
+  font-size: 10px;
+
+  button {
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--brand);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+}
+
+.detail__repo-empty {
+  margin: 0;
+  padding: 22px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.detail__repo {
+  :deep(.post-card) {
+    margin-right: 0;
+    margin-left: 0;
+  }
 }
 
 .detail__gallery-track {

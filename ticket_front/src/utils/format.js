@@ -42,6 +42,32 @@ export function formatDateTime(value) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
 
+/**
+ * 社区相对时间：1 分钟内「刚刚」，1 小时内分钟，1 天内小时，7 天内天，
+ * 更早显示月日，跨年显示年月日。
+ */
+export function formatRelativeTime(value, now = Date.now()) {
+  if (!value) return ''
+  const time = value instanceof Date ? value.getTime() : new Date(value).getTime()
+  if (Number.isNaN(time)) return ''
+
+  const base = now instanceof Date ? now.getTime() : Number(now)
+  const safeNow = Number.isNaN(base) ? Date.now() : base
+  const diff = safeNow - time
+
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+
+  const d = new Date(time)
+  const sameYear = d.getFullYear() === new Date(safeNow).getFullYear()
+  if (sameYear) {
+    return `${d.getMonth() + 1}月${d.getDate()}日`
+  }
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
 export function formatCountdown(target, now = Date.now()) {
   if (!target) {
     return { expired: true, days: 0, hours: 0, minutes: 0, seconds: 0 }

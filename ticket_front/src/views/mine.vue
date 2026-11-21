@@ -35,19 +35,40 @@ const stats = computed(() => [
   { label: '积分', value: info.value?.credits || 0 },
 ])
 
-const menu = computed(() => [
-  { icon: 'receipt', label: '我的订单', hint: '查看全部订单', to: '/orders' },
-  { icon: 'hourglass', label: '我的候补', hint: '排队位置与补位提醒', to: '/waitlists' },
-  { icon: 'users', label: '观演人管理', hint: '实名信息与一证一票', to: '/attendees' },
-  { icon: 'ticket', label: '我的票夹', hint: '电子票与动态二维码', to: '/wallet' },
-  {
+const menu = computed(() => {
+  const userId = userStore.userInfo?.id
+  const items = [
+    { icon: 'receipt', label: '我的订单', hint: '查看全部订单', to: '/orders' },
+    { icon: 'hourglass', label: '我的候补', hint: '排队位置与补位提醒', to: '/waitlists' },
+    { icon: 'users', label: '观演人管理', hint: '实名信息与一证一票', to: '/attendees' },
+    { icon: 'ticket', label: '我的票夹', hint: '电子票与动态二维码', to: '/wallet' },
+  ]
+  if (userId) {
+    items.push(
+      { icon: 'community', label: '我的动态', hint: '我发布的社区动态', to: `/user/${userId}` },
+      {
+        icon: 'users',
+        label: '我的关注',
+        hint: '我关注的人',
+        to: `/user/${userId}/follows?type=followees`,
+      },
+      {
+        icon: 'heart',
+        label: '我的粉丝',
+        hint: '关注我的人',
+        to: `/user/${userId}/follows?type=fans`,
+      },
+    )
+  }
+  items.push({
     icon: 'bell',
     label: '消息',
     hint: unread.value > 0 ? `${unread.value} 条未读` : '候补补位与订单通知',
     to: '/notifications',
     badge: unread.value,
-  },
-])
+  })
+  return items
+})
 
 onMounted(load)
 

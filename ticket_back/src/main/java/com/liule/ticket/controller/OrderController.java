@@ -22,12 +22,7 @@ public class OrderController {
         return orderService.finishOrder(orderId);
     }
 
-    /**
-     * 整单退款：仅限已支付且票全未核销的订单。
-     * <pre>
-     * PUT /api/order/refund?orderId=
-     * </pre>
-     */
+   //整单退款：仅限已支付且票全未核销的订单
     @PutMapping("/refund")
     public Result refundOrder(@RequestParam String orderId) {
         return orderService.refundOrder(orderId);

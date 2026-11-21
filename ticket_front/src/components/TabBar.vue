@@ -7,6 +7,7 @@ const route = useRoute()
 
 const tabs = [
   { name: 'home', label: '首页', icon: 'home', to: '/home' },
+  { name: 'community', label: '社区', icon: 'community', to: '/community' },
   { name: 'wallet', label: '票夹', icon: 'ticket', to: '/wallet' },
   { name: 'mine', label: '我的', icon: 'user', to: '/mine' },
 ]
